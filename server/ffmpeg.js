@@ -115,24 +115,34 @@ export function buildVideoFilter({ srcW, srcH, cropX, assName, layout = 'full', 
   return filter;
 }
 
-export async function renderClip({ src, start, end, srcW, srcH, cropX, layout, bgColor, assFile, hasAudio, out, onProgress }) {
-  const dur = end - start;
+export async function renderClip({ src, segments, srcW, srcH, cropX, layout, bgColor, assFile, hasAudio, out, onProgress }) {
+  const total = segments.reduce((n, s) => n + (s.end - s.start), 0);
   const workDir = path.dirname(assFile);
   const vf = buildVideoFilter({ srcW, srcH, cropX, layout, bgColor, assName: path.basename(assFile) });
-  const args = [
-    '-y', '-v', 'error', '-progress', 'pipe:1', '-nostats',
-    '-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', src,
-    '-vf', vf,
-    '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', '30',
-  ];
-  if (hasAudio) args.push('-c:a', 'aac', '-b:a', '160k', '-ar', '44100');
+  const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats'];
+  // 구간마다 입력을 따로 열어 빠르게 탐색한 뒤 concat으로 이어 붙인다
+  for (const s of segments) args.push('-ss', s.start.toFixed(3), '-t', (s.end - s.start).toFixed(3), '-i', src);
+  const parts = [];
+  segments.forEach((s, i) => {
+    const d = s.end - s.start;
+    parts.push(`[${i}:v]setpts=PTS-STARTPTS,fps=30[v${i}]`);
+    if (hasAudio) {
+      const f = Math.min(0.04, d / 4).toFixed(3); // 이음새 팝 노이즈 방지용 짧은 페이드
+      parts.push(`[${i}:a]aresample=44100,asetpts=PTS-STARTPTS,afade=t=in:d=${f},afade=t=out:st=${(d - Number(f)).toFixed(3)}:d=${f}[a${i}]`);
+    }
+  });
+  const ins = segments.map((_, i) => (hasAudio ? `[v${i}][a${i}]` : `[v${i}]`)).join('');
+  parts.push(`${ins}concat=n=${segments.length}:v=1:a=${hasAudio ? 1 : 0}[vc]${hasAudio ? '[aout]' : ''}`);
+  parts.push(`[vc]${vf}[vout]`);
+  args.push('-filter_complex', parts.join(';'), '-map', '[vout]');
+  if (hasAudio) args.push('-map', '[aout]', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100');
   else args.push('-an');
-  args.push('-movflags', '+faststart', out);
+  args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', '30', '-movflags', '+faststart', out);
   await run('ffmpeg', args, {
     cwd: workDir,
     onStdoutLine: (line) => {
       const m = line.match(/^out_time_(?:us|ms)=(\d+)/);
-      if (m && onProgress) onProgress(Math.min(0.99, Number(m[1]) / 1e6 / dur));
+      if (m && onProgress) onProgress(Math.min(0.99, Number(m[1]) / 1e6 / total));
     },
   });
 }

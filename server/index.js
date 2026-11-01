@@ -8,7 +8,7 @@ import * as store from './store.js';
 import * as ff from './ffmpeg.js';
 import * as ai from './ai.js';
 import { chunkSegments } from './subtitles.js';
-import { buildAss, SUB_TEMPLATES } from './ass.js';
+import { buildAss, SUB_TEMPLATES, segmentsOf, totalDuration } from './ass.js';
 import * as tpls from './templates.js';
 
 const app = express();
@@ -148,7 +148,7 @@ app.post('/api/projects/:id/analyze', wrap(async (req, res) => {
   const b = req.body || {};
   const minLen = clampInt(b.minLen, 10, 120, 30);
   const maxLen = Math.max(minLen + 5, clampInt(b.maxLen, 15, 180, 60));
-  const opts = { minLen, maxLen, count: clampInt(b.count, 1, 10, 5), language: ['ko', 'en', 'ja', 'auto'].includes(b.language) ? b.language : 'ko', templateId: tpls.resolve(b.templateId).id };
+  const opts = { minLen, maxLen, count: clampInt(b.count, 1, 10, 5), language: ['ko', 'en', 'ja', 'auto'].includes(b.language) ? b.language : 'ko', templateId: tpls.resolve(b.templateId).id, mode: b.mode === 'single' ? 'single' : 'context' };
   p.status = 'analyzing';
   p.error = null;
   p.progress = { step: 'audio', pct: 0, message: '오디오 추출 중' };
@@ -218,16 +218,38 @@ app.post('/api/projects/:id/reset', wrap(async (req, res) => {
 
 // ───────────────────────── 쇼츠 편집 ─────────────────────────
 
+function validateSegments(input, duration) {
+  if (!Array.isArray(input) || !input.length) throw httpError(400, '구간이 올바르지 않습니다.');
+  if (input.length > 8) throw httpError(400, '구간은 쇼츠당 최대 8개까지 지원합니다.');
+  const segs = input.map((x) => ({
+    start: Math.round(Number(x.start) * 100) / 100,
+    end: Math.min(duration, Math.round(Number(x.end) * 100) / 100),
+    role: ['hook', 'body', 'ending'].includes(x.role) ? x.role : 'body',
+  }));
+  if (!segs.every((x) => x.start >= 0 && x.end - x.start >= 0.5)) throw httpError(400, '구간이 올바르지 않습니다. (구간당 최소 0.5초, 영상 길이 이내)');
+  const sorted = [...segs].sort((a, b) => a.start - b.start);
+  for (let i = 1; i < sorted.length; i++) if (sorted[i].start < sorted[i - 1].end - 1e-6) throw httpError(400, '구간끼리 겹칠 수 없습니다.');
+  const total = totalDuration(segs);
+  if (total < 1) throw httpError(400, '쇼츠 전체 길이는 최소 1초입니다.');
+  if (total > 180) throw httpError(400, '쇼츠는 최대 3분까지 지원합니다.');
+  return segs;
+}
+
 app.patch('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
   const p = getProject(req);
   const c = getClip(p, req.params.cid);
   if (c.render?.status === 'rendering' || c.render?.status === 'queued') throw httpError(409, '렌더링 중에는 수정할 수 없습니다.');
   const b = req.body || {};
   const next = { ...c };
-  if ('start' in b) next.start = Number(b.start);
-  if ('end' in b) next.end = Number(b.end);
-  if (!(next.start >= 0 && next.end <= p.video.duration + 0.01 && next.end - next.start >= 1)) throw httpError(400, '구간이 올바르지 않습니다. (최소 1초, 영상 길이 이내)');
-  if (next.end - next.start > 180) throw httpError(400, '쇼츠는 최대 3분까지 지원합니다.');
+  if ('segments' in b) {
+    next.segments = validateSegments(b.segments, p.video.duration);
+  } else if ('start' in b || 'end' in b) {
+    // 구버전 호환: 구간이 하나일 때만 start/end로 수정
+    if (c.segments.length !== 1) throw httpError(400, '여러 구간으로 구성된 쇼츠는 segments로 수정하세요.');
+    next.segments = validateSegments([{ ...c.segments[0], ...('start' in b ? { start: Number(b.start) } : {}), ...('end' in b ? { end: Number(b.end) } : {}) }], p.video.duration);
+  }
+  next.start = Math.min(...next.segments.map((x) => x.start));
+  next.end = Math.max(...next.segments.map((x) => x.end));
   if ('title' in b) next.title = String(b.title).slice(0, 80);
   if ('description' in b) next.description = String(b.description).slice(0, 2000);
   if ('hashtags' in b && Array.isArray(b.hashtags)) next.hashtags = b.hashtags.map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean).slice(0, 15);
@@ -249,7 +271,7 @@ app.post('/api/projects/:id/clips', wrap(async (req, res) => {
   const start = Math.max(0, Number(req.body?.start) || 0);
   const end = Math.min(p.video.duration, Number(req.body?.end) || start + 30);
   if (end - start < 1) throw httpError(400, '구간이 올바르지 않습니다.');
-  const c = { id: store.newId(4), start, end, title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, templateId: p.clips[0]?.templateId || tpls.all()[0].id, subtitleOn: true, titleOn: true, render: { status: 'idle' } };
+  const c = { id: store.newId(4), start, end, segments: [{ start, end, role: 'body' }], summary: '', title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, templateId: p.clips[0]?.templateId || tpls.all()[0].id, subtitleOn: true, titleOn: true, render: { status: 'idle' } };
   p.clips.push(c);
   if (p.status === 'uploaded') p.status = 'ready';
   store.save(p);
@@ -316,12 +338,13 @@ async function renderOne(p, c) {
   const tmpFile = path.join(outDir, `${c.id}.tmp.mp4`);
   try {
     c.render = { status: 'rendering', pct: 0 };
-    const subs = p.subtitles.filter((s) => s.end > c.start && s.start < c.end);
+    const segs = segmentsOf(c);
+    const subs = p.subtitles.filter((s) => segs.some((g) => s.end > g.start && s.start < g.end));
     const assFile = path.join(outDir, `${c.id}.ass`);
     const tpl = tpls.resolve(c.templateId);
     fs.writeFileSync(assFile, buildAss({ clip: c, subs, tpl }));
     await ff.renderClip({
-      src: path.join(dir, p.video.file), start: c.start, end: c.end,
+      src: path.join(dir, p.video.file), segments: segs,
       srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, layout: tpl.layout, bgColor: tpl.bgColor, assFile,
       hasAudio: p.video.hasAudio, out: tmpFile,
       onProgress: (f) => { c.render.pct = Math.round(f * 100); },

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chunkSegments, splitTitle } from '../server/subtitles.js';
-import { buildAss, assTime } from '../server/ass.js';
-import { normalizeClips, heuristicHighlights } from '../server/ai.js';
+import { buildAss, assTime, timelineSubs } from '../server/ass.js';
+import { normalizeClips, normalizeSegments, heuristicHighlights } from '../server/ai.js';
 import { buildVideoFilter } from '../server/ffmpeg.js';
 import { DEFAULTS, sanitize } from '../server/templates.js';
 
@@ -66,4 +66,42 @@ test('템플릿 검증: 잘못된 값은 기본값으로 보정', () => {
   assert.equal(t.layout, 'full');
   assert.equal(t.subStyle, 'basic');
   assert.equal(t.account, '@a b');
+});
+
+test('맥락 편집: 구간 보정 — 겹침 제거, 인접 병합, 총 길이 제한, 재생 순서 유지', () => {
+  const transcript = Array.from({ length: 60 }, (_, i) => ({ start: i * 5, end: i * 5 + 4.5, text: 'x' }));
+  const segs = normalizeSegments(
+    [
+      { start: 200, end: 205, role: 'hook' },
+      { start: 10, end: 24.5, role: 'body' },
+      { start: 25, end: 39.5, role: 'body' }, // 바로 이어지므로 병합
+      { start: 20, end: 30, role: 'body' }, // 겹침 → 제거
+      { start: 100, end: 140, role: 'ending' }, // 남은 길이만큼만
+    ],
+    { transcript, duration: 300, maxLen: 50 },
+  );
+  assert.equal(segs[0].role, 'hook');
+  assert.equal(segs[0].start, 200);
+  assert.deepEqual([segs[1].start, segs[1].end], [10, 39.5]);
+  assert.equal(segs.length, 3);
+  assert.ok(segs.reduce((n, s) => n + s.end - s.start, 0) <= 50.001);
+});
+
+test('맥락 편집: 쇼츠끼리 원본 구간이 겹치면 제외', () => {
+  const transcript = Array.from({ length: 60 }, (_, i) => ({ start: i * 5, end: i * 5 + 4.5, text: 'x' }));
+  const mk = (segments, score) => ({ segments, title: 't', score });
+  const out = normalizeClips(
+    [mk([{ start: 10, end: 40, role: 'body' }], 90), mk([{ start: 200, end: 205, role: 'hook' }, { start: 30, end: 55, role: 'body' }], 80), mk([{ start: 100, end: 130, role: 'body' }], 70)],
+    { transcript, duration: 300, minLen: 20, maxLen: 60 },
+  );
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((c) => c.score), [90, 70]);
+});
+
+test('이어 붙인 타임라인으로 자막 시간 변환', () => {
+  const segs = [{ start: 200, end: 205 }, { start: 10, end: 20 }];
+  const out = timelineSubs(segs, [{ start: 10, end: 12, text: '본론' }, { start: 201, end: 203, text: '후킹' }, { start: 100, end: 101, text: '제외' }]);
+  assert.deepEqual(out.map((s) => [s.text, s.start, s.end]), [['후킹', 1, 3], ['본론', 5, 7]]);
+  const ass = buildAss({ clip: { segments: segs, title: '' }, tpl: DEFAULTS, subs: [{ start: 10, end: 12, text: '본론' }] });
+  assert.match(ass, /Dialogue: 1,0:00:05.00,0:00:07.00,Sub,,0,0,0,,본론/);
 });

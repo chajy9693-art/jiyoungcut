@@ -30,6 +30,7 @@ export function get(id) {
     p.error = '서버가 재시작되어 분석이 중단되었습니다. 다시 시도해 주세요.';
   }
   for (const c of p.clips || []) {
+    if (!c.segments?.length) c.segments = [{ start: c.start, end: c.end, role: 'body' }];
     if (c.render?.status === 'rendering' || c.render?.status === 'queued') c.render = { status: 'error', error: '렌더링이 중단되었습니다.' };
   }
   cache.set(id, p);

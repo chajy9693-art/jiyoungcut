@@ -1,0 +1,18 @@
+{
+  "name": "jiyoungcut",
+  "version": "0.1.0",
+  "description": "롱폼 영상을 AI로 분석해 9:16 쇼츠로 잘라주는 웹앱 (알파컷 스타일 MVP)",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "node --watch --env-file-if-exists=.env server/index.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=22.9" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1",
+    "openai": "^4.77.0"
+  }
+}

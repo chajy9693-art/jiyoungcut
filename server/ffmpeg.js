@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { OUT_W, OUT_H, FONTS_DIR } from './config.js';
+import { FRAME } from './ass.js';
 
 function run(cmd, args, { cwd, onStdoutLine } = {}) {
   return new Promise((resolve, reject) => {
@@ -80,22 +81,33 @@ export async function extractAudioChunks(src, dir, chunkSec = 600) {
  * 컷 → 9:16 크롭 → 1080x1920 → 자막/제목(ASS) 번인 → MP4
  * cropX: 0(왼쪽)~1(오른쪽) 크롭 창 위치
  */
-export function buildVideoFilter({ srcW, srcH, cropX, assName }) {
-  const target = OUT_W / OUT_H;
+export function buildVideoFilter({ srcW, srcH, cropX, assName, layout = 'full', bgColor = '#000000' }) {
   const even = (n) => Math.max(2, Math.floor(n / 2) * 2);
-  let filter;
   const cx = Math.min(1, Math.max(0, Number(cropX ?? 0.5)));
-  if (srcW / srcH >= target) {
-    const cw = even(srcH * target);
-    const x = Math.round((srcW - cw) * cx);
-    filter = `crop=${cw}:${even(srcH)}:${x}:0`;
+  let filter;
+  if (layout === 'framed') {
+    // 정사각 크롭 → 1080x1080 → 배경색 위 가운데 배치
+    if (srcW >= srcH) {
+      const s = even(srcH);
+      filter = `crop=${s}:${s}:${Math.round((srcW - s) * cx)}:0`;
+    } else {
+      const s = even(srcW);
+      filter = `crop=${s}:${s}:0:${Math.round((srcH - s) / 2)}`;
+    }
+    const bg = '0x' + String(bgColor).replace('#', '');
+    filter += `,scale=${FRAME.size}:${FRAME.size}:flags=lanczos,setsar=1,pad=${OUT_W}:${OUT_H}:0:${FRAME.top}:color=${bg}`;
   } else {
-    // 이미 세로보다 더 좁은 영상: 위아래를 잘라 9:16 맞춤
-    const ch = even(srcW / target);
-    const y = Math.round((srcH - ch) / 2);
-    filter = `crop=${even(srcW)}:${ch}:0:${y}`;
+    const target = OUT_W / OUT_H;
+    if (srcW / srcH >= target) {
+      const cw = even(srcH * target);
+      filter = `crop=${cw}:${even(srcH)}:${Math.round((srcW - cw) * cx)}:0`;
+    } else {
+      // 이미 세로보다 더 좁은 영상: 위아래를 잘라 9:16 맞춤
+      const ch = even(srcW / target);
+      filter = `crop=${even(srcW)}:${ch}:0:${Math.round((srcH - ch) / 2)}`;
+    }
+    filter += `,scale=${OUT_W}:${OUT_H}:flags=lanczos,setsar=1`;
   }
-  filter += `,scale=${OUT_W}:${OUT_H}:flags=lanczos,setsar=1`;
   if (assName) {
     const fontsDir = fs.existsSync(FONTS_DIR) ? `:fontsdir='${FONTS_DIR.replace(/\\/g, '/').replace(/:/g, '\\:')}'` : '';
     filter += `,ass=${assName}${fontsDir}`;
@@ -103,10 +115,10 @@ export function buildVideoFilter({ srcW, srcH, cropX, assName }) {
   return filter;
 }
 
-export async function renderClip({ src, start, end, srcW, srcH, cropX, assFile, hasAudio, out, onProgress }) {
+export async function renderClip({ src, start, end, srcW, srcH, cropX, layout, bgColor, assFile, hasAudio, out, onProgress }) {
   const dur = end - start;
   const workDir = path.dirname(assFile);
-  const vf = buildVideoFilter({ srcW, srcH, cropX, assName: path.basename(assFile) });
+  const vf = buildVideoFilter({ srcW, srcH, cropX, layout, bgColor, assName: path.basename(assFile) });
   const args = [
     '-y', '-v', 'error', '-progress', 'pipe:1', '-nostats',
     '-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', src,

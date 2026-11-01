@@ -9,6 +9,7 @@ import * as ff from './ffmpeg.js';
 import * as ai from './ai.js';
 import { chunkSegments } from './subtitles.js';
 import { buildAss, SUB_TEMPLATES } from './ass.js';
+import * as tpls from './templates.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -31,7 +32,34 @@ function getClip(p, cid) {
 // ───────────────────────── 설정 / 목록 ─────────────────────────
 
 app.get('/api/config', (req, res) => {
-  res.json({ ...ai.capabilities(), templates: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
+  res.json({ ...ai.capabilities(), subStyles: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
+});
+
+// ───────────────────────── 템플릿 ─────────────────────────
+
+const markStale = (templateId) => {
+  for (const pr of store.list()) {
+    let changed = false;
+    for (const c of pr.clips) {
+      if (c.render?.status === 'done' && tpls.resolve(c.templateId).id === templateId) { c.render.stale = true; changed = true; }
+    }
+    if (changed) store.save(pr);
+  }
+};
+
+app.get('/api/templates', (req, res) => res.json(tpls.all()));
+app.post('/api/templates', (req, res) => res.status(201).json(tpls.create(req.body || {})));
+app.put('/api/templates/:tid', (req, res) => {
+  const t = tpls.update(req.params.tid, req.body || {});
+  if (!t) throw httpError(404, '템플릿을 찾을 수 없습니다.');
+  markStale(t.id);
+  res.json(t);
+});
+app.delete('/api/templates/:tid', (req, res) => {
+  const id = req.params.tid;
+  if (!tpls.find(id)) throw httpError(404, '템플릿을 찾을 수 없습니다.');
+  if (!tpls.remove(id)) throw httpError(400, '마지막 템플릿은 삭제할 수 없습니다.');
+  res.json({ ok: true });
 });
 
 app.get('/api/projects', (req, res) => {
@@ -120,7 +148,7 @@ app.post('/api/projects/:id/analyze', wrap(async (req, res) => {
   const b = req.body || {};
   const minLen = clampInt(b.minLen, 10, 120, 30);
   const maxLen = Math.max(minLen + 5, clampInt(b.maxLen, 15, 180, 60));
-  const opts = { minLen, maxLen, count: clampInt(b.count, 1, 10, 5), language: ['ko', 'en', 'ja', 'auto'].includes(b.language) ? b.language : 'ko' };
+  const opts = { minLen, maxLen, count: clampInt(b.count, 1, 10, 5), language: ['ko', 'en', 'ja', 'auto'].includes(b.language) ? b.language : 'ko', templateId: tpls.resolve(b.templateId).id };
   p.status = 'analyzing';
   p.error = null;
   p.progress = { step: 'audio', pct: 0, message: '오디오 추출 중' };
@@ -172,7 +200,7 @@ async function runAnalysis(p, opts) {
   if (!picked.length) throw new Error('쇼츠로 만들 구간을 찾지 못했습니다. 길이 범위를 조정해 다시 시도해 보세요.');
 
   p.clips = picked.map((c) => ({
-    id: store.newId(4), ...c, cropX: 0.5, template: 'basic', subtitleOn: true, titleOn: true, render: { status: 'idle' },
+    id: store.newId(4), ...c, cropX: 0.5, templateId: opts.templateId, subtitleOn: true, titleOn: true, render: { status: 'idle' },
   }));
   p.status = 'ready';
   p.progress = { step: 'done', pct: 100, message: '완료' };
@@ -204,9 +232,9 @@ app.patch('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
   if ('description' in b) next.description = String(b.description).slice(0, 2000);
   if ('hashtags' in b && Array.isArray(b.hashtags)) next.hashtags = b.hashtags.map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean).slice(0, 15);
   if ('cropX' in b) next.cropX = Math.min(1, Math.max(0, Number(b.cropX) || 0));
-  if ('template' in b) {
-    if (!SUB_TEMPLATES[b.template]) throw httpError(400, '알 수 없는 템플릿입니다.');
-    next.template = b.template;
+  if ('templateId' in b) {
+    if (!tpls.find(b.templateId)) throw httpError(400, '알 수 없는 템플릿입니다.');
+    next.templateId = b.templateId;
   }
   for (const k of ['subtitleOn', 'titleOn']) if (k in b) next[k] = !!b[k];
   Object.assign(c, next);
@@ -221,7 +249,7 @@ app.post('/api/projects/:id/clips', wrap(async (req, res) => {
   const start = Math.max(0, Number(req.body?.start) || 0);
   const end = Math.min(p.video.duration, Number(req.body?.end) || start + 30);
   if (end - start < 1) throw httpError(400, '구간이 올바르지 않습니다.');
-  const c = { id: store.newId(4), start, end, title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, template: 'basic', subtitleOn: true, titleOn: true, render: { status: 'idle' } };
+  const c = { id: store.newId(4), start, end, title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, templateId: p.clips[0]?.templateId || tpls.all()[0].id, subtitleOn: true, titleOn: true, render: { status: 'idle' } };
   p.clips.push(c);
   if (p.status === 'uploaded') p.status = 'ready';
   store.save(p);
@@ -290,10 +318,11 @@ async function renderOne(p, c) {
     c.render = { status: 'rendering', pct: 0 };
     const subs = p.subtitles.filter((s) => s.end > c.start && s.start < c.end);
     const assFile = path.join(outDir, `${c.id}.ass`);
-    fs.writeFileSync(assFile, buildAss({ clip: c, subs }));
+    const tpl = tpls.resolve(c.templateId);
+    fs.writeFileSync(assFile, buildAss({ clip: c, subs, tpl }));
     await ff.renderClip({
       src: path.join(dir, p.video.file), start: c.start, end: c.end,
-      srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, assFile,
+      srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, layout: tpl.layout, bgColor: tpl.bgColor, assFile,
       hasAudio: p.video.hasAudio, out: tmpFile,
       onProgress: (f) => { c.render.pct = Math.round(f * 100); },
     });

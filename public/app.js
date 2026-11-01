@@ -31,17 +31,48 @@ async function api(path, opts = {}) {
   return data;
 }
 
+function titleLines(t) {
+  t = String(t || '').trim();
+  if (!t) return [];
+  if (t.includes('\n')) return t.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 2);
+  if (t.length <= 14 || !t.includes(' ')) return [t];
+  let best = -1;
+  for (let i = 0; i < t.length; i++) if (t[i] === ' ' && (best < 0 || Math.abs(i - t.length / 2) < Math.abs(best - t.length / 2))) best = i;
+  return [t.slice(0, best).trim(), t.slice(best + 1).trim()];
+}
+
+const PHONE_HTML = '<div class="vwrap"></div><div class="ov-title"></div><div class="ov-sub"></div><div class="ov-acc"></div>';
+
+/** 템플릿(레이아웃/색/계정명)을 9:16 미리보기 박스에 반영 — 편집기와 템플릿 설정 화면이 공용 */
+function paintPhone(phone, tpl, { title = [], sub = '' } = {}) {
+  const framed = tpl.layout === 'framed';
+  phone.classList.toggle('framed', framed);
+  phone.style.background = framed ? tpl.bgColor : '#000';
+  const t = phone.querySelector('.ov-title');
+  t.style.fontSize = `${tpl.titleSize / 10.8}cqw`;
+  t.style.color = tpl.titleColor1;
+  t.innerHTML = !title.length ? '' : title.length === 1 ? esc(title[0]) : `${esc(title[0])}\n<b style="color:${esc(tpl.titleColor2)}">${esc(title[1])}</b>`;
+  const s = phone.querySelector('.ov-sub');
+  s.className = `ov-sub ${tpl.subStyle}`;
+  s.innerHTML = sub ? `<span>${esc(sub)}</span>` : '';
+  const a = phone.querySelector('.ov-acc');
+  a.textContent = tpl.account || '';
+  a.style.fontSize = `${tpl.accountSize / 10.8}cqw`;
+  a.style.color = tpl.accountColor;
+}
+
 // ───────────────────────── 라우터 ─────────────────────────
 
 async function route() {
   clearTimeout(pollTimer);
   cleanup?.(); cleanup = null;
   const h = location.hash.replace(/^#/, '') || '/';
-  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', (a.dataset.nav === 'new' && h === '/') || (a.dataset.nav === 'list' && h === '/projects')));
+  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', (a.dataset.nav === 'new' && h === '/') || (a.dataset.nav === 'list' && h === '/projects') || (a.dataset.nav === 'tpl' && h === '/templates')));
   const m = h.match(/^\/p\/([a-f0-9]+)/);
   try {
     if (m) await projectPage(m[1]);
     else if (h === '/projects') await listPage();
+    else if (h === '/templates') await templatesPage();
     else homePage();
   } catch (e) {
     $app.innerHTML = `<div class="page"><div class="err-box">${esc(e.message)}</div><a class="btn" href="#/">홈으로</a></div>`;
@@ -137,12 +168,13 @@ async function loadCards(box, limit) {
 
 async function projectPage(id) {
   const p = await api(`/api/projects/${id}`);
-  if (p.status === 'ready' && p.clips.length) return editorPage(p);
   if (p.status === 'analyzing') return analyzingPage(p);
-  return setupPage(p);
+  const templates = await api('/api/templates');
+  if (p.status === 'ready' && p.clips.length) return editorPage(p, templates);
+  return setupPage(p, templates);
 }
 
-function setupPage(p) {
+function setupPage(p, templates) {
   const hasErr = p.status === 'error' && p.error;
   $app.innerHTML = '';
   const page = el(`<div class="page"><a class="back" href="#/">← 프로젝트</a>
@@ -152,6 +184,7 @@ function setupPage(p) {
       <div class="field"><label>쇼츠 길이</label><select id="len">
         <option value="15-30">15~30초</option><option value="30-60" selected>30~60초</option><option value="60-90">60~90초</option><option value="45-120">45~120초</option></select></div>
       <div class="field"><label>후보 개수</label><select id="count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></div>
+      <div class="field"><label>템플릿</label><select id="tplsel">${templates.map((t) => `<option value="${t.id}">${esc(t.name)}${t.account ? ' · ' + esc(t.account) : ''}</option>`).join('')}</select></div>
       <div class="field"><label>영상 언어</label><select id="lang"><option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option><option value="auto">자동 감지</option></select></div>
       <button class="btn primary big" id="go" style="margin-left:auto">AI로 쇼츠 찾기 →</button></div></div></div>`);
   $app.append(page);
@@ -159,7 +192,7 @@ function setupPage(p) {
     e.target.disabled = true;
     const [minLen, maxLen] = page.querySelector('#len').value.split('-').map(Number);
     try {
-      await api(`/api/projects/${p.id}/analyze`, { method: 'POST', body: { minLen, maxLen, count: +page.querySelector('#count').value, language: page.querySelector('#lang').value } });
+      await api(`/api/projects/${p.id}/analyze`, { method: 'POST', body: { minLen, maxLen, count: +page.querySelector('#count').value, language: page.querySelector('#lang').value, templateId: page.querySelector('#tplsel').value } });
       route();
     } catch (err) { toast(err.message, true); e.target.disabled = false; }
   };
@@ -180,20 +213,13 @@ function analyzingPage(p) {
 
 // ───────────────────────── 에디터 ─────────────────────────
 
-function editorPage(p) {
+function editorPage(p, templates) {
   const S = { p, sel: p.clips[0].id, t: 0, playing: false };
   const clip = () => S.p.clips.find((c) => c.id === S.sel);
   const src = p.video.proxy ? `/media/${p.id}/proxy` : `/media/${p.id}/source`;
   const subsIn = (c) => S.p.subtitles.filter((s) => s.end > c.start && s.start < c.end);
-  const titleLines = (t) => {
-    t = String(t || '').trim();
-    if (!t) return [];
-    if (t.includes('\n')) return t.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 2);
-    if (t.length <= 14 || !t.includes(' ')) return [t];
-    let best = -1;
-    for (let i = 0; i < t.length; i++) if (t[i] === ' ' && (best < 0 || Math.abs(i - t.length / 2) < Math.abs(best - t.length / 2))) best = i;
-    return [t.slice(0, best).trim(), t.slice(best + 1).trim()];
-  };
+  const tplOf = (c) => templates.find((t) => t.id === c.templateId) || templates[0];
+  const videoW = () => (tplOf(clip()).layout === 'framed' ? aspect * 100 : aspect * (16 / 9) * 100);
 
   $app.innerHTML = '';
   const root = el(`<div class="editor">
@@ -202,7 +228,7 @@ function editorPage(p) {
       <div style="display:grid;gap:8px;margin-top:14px"><button class="btn" id="addclip">＋ 현재 위치에서 구간 추가</button><button class="btn" id="reanalyze">다시 분석</button></div></div>
     <div class="col center">
       <div class="topbar"><span class="name">${esc(p.name)}</span></div>
-      <div class="phone" id="phone"><video id="vid" src="${src}" preload="auto" playsinline></video><div class="ov-title" id="ovt"></div><div class="ov-sub" id="ovs"></div></div>
+      <div class="phone" id="phone"><video id="vid" src="${src}" preload="auto" playsinline></video></div>
       <div class="hint">미리보기를 좌우로 드래그해 크롭 위치를 조정하세요</div>
       <div class="transport"><button class="btn" id="play">▶ 재생</button><span id="time" class="meta"></span></div>
       <div class="timeline"><div class="tl" id="tl"></div><div class="tl-labels"><span id="tl0"></span><span id="tl1"></span></div>
@@ -211,7 +237,11 @@ function editorPage(p) {
     <div class="col right" id="right"></div></div>`);
   $app.append(root);
   const $ = (s) => root.querySelector(s);
-  const vid = $('#vid'), phone = $('#phone');
+  const phone = $('#phone');
+  const vidEl = $('#vid');
+  phone.innerHTML = PHONE_HTML;
+  phone.querySelector('.vwrap').append(vidEl);
+  const vid = vidEl;
   const aspect = p.video.width / p.video.height;
   let win = [0, p.video.duration]; // 타임라인 표시 구간
 
@@ -249,15 +279,12 @@ function editorPage(p) {
   // ── 미리보기 ──
   function seek(t) { vid.currentTime = t; S.t = t; }
   function updatePreview() {
-    const c = clip();
-    const W = aspect * (16 / 9) * 100; // 영상 폭 (phone 폭 = 100cqw)
+    const c = clip(); const tpl = tplOf(c);
+    const W = videoW(); // 영상 폭 (phone 폭 = 100cqw)
     if (W > 100) { vid.style.width = `${W}cqw`; vid.style.left = `${-(W - 100) * c.cropX}cqw`; vid.style.objectFit = ''; }
     else { vid.style.width = '100%'; vid.style.left = '0'; vid.style.objectFit = 'cover'; }
-    const tl = c.titleOn ? titleLines(c.title) : [];
-    $('#ovt').innerHTML = tl.length ? (tl.length === 1 ? esc(tl[0]) : `${esc(tl[0])}\n<b>${esc(tl[1])}</b>`) : '';
     const s = c.subtitleOn ? subsIn(c).find((x) => S.t >= x.start && S.t < x.end) : null;
-    const o = $('#ovs'); o.className = `ov-sub ${c.template}`;
-    o.innerHTML = s && s.text ? `<span>${esc(s.text)}</span>` : '';
+    paintPhone(phone, tpl, { title: c.titleOn ? titleLines(c.title) : [], sub: s?.text || '' });
     $('#time').textContent = `${fmtP(Math.max(0, S.t - c.start))} / ${fmtP(c.end - c.start)}`;
     root.querySelectorAll('.subrow').forEach((r) => r.classList.toggle('active', r.dataset.id === s?.id));
     renderHead();
@@ -281,7 +308,7 @@ function editorPage(p) {
   phone.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, crop: clip().cropX }; phone.setPointerCapture(e.pointerId); });
   phone.addEventListener('pointermove', (e) => {
     if (!drag) return;
-    const W = aspect * (16 / 9) * 100;
+    const W = videoW();
     if (W <= 100) return;
     const px = (phone.clientWidth * (W - 100)) / 100;
     const c = clip();
@@ -353,9 +380,11 @@ function editorPage(p) {
         <div class="field"><textarea id="title" rows="2" placeholder="쇼츠 제목 (줄바꿈으로 2줄)">${esc(c.title)}</textarea></div>
         <label class="toggle"><span>제목 표시</span><input type="checkbox" id="titleOn" ${c.titleOn ? 'checked' : ''}></label></div>
       <div class="sect"><h4>화면 (9:16 크롭)</h4><div class="field"><label>크롭 위치 (왼쪽 ↔ 오른쪽)</label><input type="range" id="crop" min="0" max="100" value="${Math.round(c.cropX * 100)}"></div></div>
+      <div class="sect"><h4>템플릿 <a href="#/templates" style="color:var(--accent);font-weight:400">편집 →</a></h4>
+        <div class="field"><select id="tplsel">${templates.map((t) => `<option value="${t.id}" ${t.id === tplOf(c).id ? 'selected' : ''}>${esc(t.name)}${t.account ? ' · ' + esc(t.account) : ''}</option>`).join('')}</select></div>
+        <div class="meta">계정명·배경색·제목/자막 스타일이 템플릿으로 적용됩니다.</div></div>
       <div class="sect"><h4>자막</h4>
         <label class="toggle"><span>자막 표시</span><input type="checkbox" id="subOn" ${c.subtitleOn ? 'checked' : ''}></label>
-        <div class="seg" id="tpl">${Object.entries(config.templates).map(([k, v]) => `<button data-k="${k}" class="${c.template === k ? 'on' : ''}">${esc(v)}</button>`).join('')}</div>
         <div class="subrows" id="subrows"></div><button class="btn sm" id="addsub">＋ 현재 위치에 자막 추가</button></div>
       <div class="sect"><h4>게시글 정보 <button class="btn sm" id="copy">복사</button></h4>
         <div class="field"><textarea id="desc" rows="3" placeholder="설명">${esc(c.description)}</textarea></div>
@@ -368,7 +397,7 @@ function editorPage(p) {
     q('#crop').oninput = (e) => { clip().cropX = e.target.value / 100; updatePreview(); };
     q('#crop').onchange = () => patchClip({ cropX: clip().cropX });
     q('#subOn').onchange = (e) => { patchClip({ subtitleOn: e.target.checked }); updatePreview(); };
-    q('#tpl').onclick = (e) => { const k = e.target.dataset.k; if (!k) return; patchClip({ template: k }); q('#tpl').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === k)); updatePreview(); };
+    q('#tplsel').onchange = (e) => { patchClip({ templateId: e.target.value }); updatePreview(); };
     q('#desc').oninput = (e) => patchClip({ description: e.target.value });
     q('#tags').onchange = (e) => patchClip({ hashtags: e.target.value.split(/[\s,]+/).map((h) => h.replace(/^#/, '')).filter(Boolean) });
     q('#copy').onclick = () => navigator.clipboard?.writeText(`${clip().title.replace(/\n/g, ' ')}\n\n${q('#desc').value}\n\n${q('#tags').value}`).then(() => toast('복사했습니다'));
@@ -457,6 +486,75 @@ function editorPage(p) {
   renderList(); renderRight(); computeWin(); renderTimeline();
   vid.addEventListener('loadedmetadata', () => { seek(clip().start); updatePreview(); }, { once: true });
   updatePreview(); schedulePoll();
+}
+
+// ───────────────────────── 템플릿 설정 ─────────────────────────
+
+async function templatesPage() {
+  let list = await api('/api/templates');
+  let selId = list[0].id;
+  let d = { ...list[0] };
+  let dirty = false;
+  $app.innerHTML = '';
+  const page = el('<div class="page" style="max-width:1250px"><h1>템플릿 설정</h1><p class="sub">쇼츠 제목 스타일, 하단 계정명, 배경, 자막 스타일을 템플릿으로 저장해 두고 쇼츠마다 골라 쓰세요.</p><div class="tplpage"><div><div class="tpllist" id="tl"></div><button class="btn" id="new" style="margin-top:10px;width:100%">＋ 새 템플릿</button></div><div class="box formgrid" id="form"></div><div><div class="phone static" id="ph">' + PHONE_HTML + '</div></div></div></div>');
+  $app.append(page);
+  const $ = (s) => page.querySelector(s);
+  $('#ph').querySelector('.vwrap').innerHTML = '<div class="sample"></div>';
+
+  const repaint = () => paintPhone($('#ph'), d, { title: ['쇼츠 제목 첫번째 줄', '쇼츠 제목 마지막 줄'], sub: '자막은 이렇게 보입니다' });
+
+  function renderList() {
+    $('#tl').innerHTML = '';
+    for (const t of list) {
+      const it = el(`<div class="tplitem ${t.id === selId ? 'sel' : ''}"><div><div>${esc(t.name)}</div><div class="meta">${t.account ? esc(t.account) : '계정명 없음'} · ${t.layout === 'framed' ? '프레임' : '전체화면'}</div></div></div>`);
+      it.onclick = () => { if (t.id === selId) return; if (dirty && !confirm('저장하지 않은 변경 사항이 사라집니다. 계속할까요?')) return; select(t.id); };
+      $('#tl').append(it);
+    }
+  }
+  function select(id) { selId = id; d = { ...list.find((t) => t.id === id) }; dirty = false; renderList(); renderForm(); }
+
+  function renderForm() {
+    const f = $('#form');
+    f.innerHTML = `
+      <div class="two"><div class="field"><label>템플릿 이름</label><input type="text" id="name" maxlength="30" value="${esc(d.name)}"></div>
+        <div class="field"><label>계정명 (영상 하단)</label><input type="text" id="account" maxlength="40" placeholder="@내채널" value="${esc(d.account)}"></div></div>
+      <div class="field"><label>레이아웃</label><div class="seg" id="layout"><button data-k="full" class="${d.layout === 'full' ? 'on' : ''}">전체화면</button><button data-k="framed" class="${d.layout === 'framed' ? 'on' : ''}">프레임 (배경색 + 정사각 영상)</button></div></div>
+      <div class="field"><label>배경색 (프레임 레이아웃)</label><div class="colorrow"><input type="color" id="bgColor" value="${d.bgColor}"><span class="meta">${d.layout === 'framed' ? '' : '전체화면에서는 사용되지 않습니다'}</span></div></div>
+      <div class="two"><div class="field"><label>제목 첫째 줄 색</label><div class="colorrow"><input type="color" id="titleColor1" value="${d.titleColor1}"></div></div>
+        <div class="field"><label>제목 둘째 줄 색</label><div class="colorrow"><input type="color" id="titleColor2" value="${d.titleColor2}"></div></div></div>
+      <div class="field"><label>제목 크기 <span id="tsv">${d.titleSize}</span></label><input type="range" id="titleSize" min="50" max="110" value="${d.titleSize}"></div>
+      <div class="two"><div class="field"><label>계정명 색</label><div class="colorrow"><input type="color" id="accountColor" value="${d.accountColor}"></div></div>
+        <div class="field"><label>계정명 크기 <span id="asv">${d.accountSize}</span></label><input type="range" id="accountSize" min="30" max="90" value="${d.accountSize}"></div></div>
+      <div class="field"><label>자막 스타일</label><div class="seg" id="subStyle">${Object.entries(config.subStyles || {}).map(([k, v]) => `<button data-k="${k}" class="${d.subStyle === k ? 'on' : ''}">${esc(v)}</button>`).join('')}</div></div>
+      <div class="row" style="margin-top:6px"><button class="btn primary" id="save">저장</button><button class="btn" id="dup">복제</button><button class="btn danger" id="del" style="margin-left:auto">삭제</button></div>`;
+    const set = (k, v) => { d[k] = v; dirty = true; repaint(); };
+    for (const k of ['name', 'account']) f.querySelector('#' + k).oninput = (e) => { set(k, e.target.value); };
+    for (const k of ['bgColor', 'titleColor1', 'titleColor2', 'accountColor']) f.querySelector('#' + k).oninput = (e) => set(k, e.target.value);
+    f.querySelector('#titleSize').oninput = (e) => { f.querySelector('#tsv').textContent = e.target.value; set('titleSize', +e.target.value); };
+    f.querySelector('#accountSize').oninput = (e) => { f.querySelector('#asv').textContent = e.target.value; set('accountSize', +e.target.value); };
+    for (const k of ['layout', 'subStyle']) f.querySelector('#' + k).onclick = (e) => { const v = e.target.dataset.k; if (!v) return; set(k, v); f.querySelectorAll(`#${k} button`).forEach((b) => b.classList.toggle('on', b.dataset.k === v)); };
+    f.querySelector('#save').onclick = async () => {
+      try {
+        const t = await api(`/api/templates/${selId}`, { method: 'PUT', body: d });
+        list = list.map((x) => (x.id === t.id ? t : x)); d = { ...t }; dirty = false; renderList(); toast('저장했습니다');
+      } catch (e) { toast(e.message, true); }
+    };
+    f.querySelector('#dup').onclick = async () => {
+      try { const t = await api('/api/templates', { method: 'POST', body: { ...d, name: d.name + ' 복사' } }); list.push(t); select(t.id); toast('복제했습니다'); } catch (e) { toast(e.message, true); }
+    };
+    f.querySelector('#del').onclick = async () => {
+      if (!confirm(`"${d.name}" 템플릿을 삭제할까요? 이 템플릿을 쓰던 쇼츠는 첫 번째 템플릿으로 바뀝니다.`)) return;
+      try { await api(`/api/templates/${selId}`, { method: 'DELETE' }); list = list.filter((x) => x.id !== selId); select(list[0].id); } catch (e) { toast(e.message, true); }
+    };
+    repaint();
+  }
+
+  $('#new').onclick = async () => {
+    if (dirty && !confirm('저장하지 않은 변경 사항이 사라집니다. 계속할까요?')) return;
+    try { const t = await api('/api/templates', { method: 'POST', body: {} }); list.push(t); select(t.id); } catch (e) { toast(e.message, true); }
+  };
+  cleanup = () => {};
+  renderList(); renderForm();
 }
 
 init();

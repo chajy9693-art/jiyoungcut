@@ -1,0 +1,344 @@
+import express from 'express';
+import multer from 'multer';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PORT, ROOT, MAX_UPLOAD_BYTES, MAX_DURATION_SEC, MOCK_AI } from './config.js';
+import * as store from './store.js';
+import * as ff from './ffmpeg.js';
+import * as ai from './ai.js';
+import { chunkSegments } from './subtitles.js';
+import { buildAss, SUB_TEMPLATES } from './ass.js';
+
+const app = express();
+app.use(express.json({ limit: '2mb' }));
+app.use(express.static(path.join(ROOT, 'public')));
+
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+
+function getProject(req) {
+  const p = store.get(req.params.id);
+  if (!p) throw httpError(404, '프로젝트를 찾을 수 없습니다.');
+  return p;
+}
+function getClip(p, cid) {
+  const c = p.clips.find((x) => x.id === cid);
+  if (!c) throw httpError(404, '쇼츠를 찾을 수 없습니다.');
+  return c;
+}
+
+// ───────────────────────── 설정 / 목록 ─────────────────────────
+
+app.get('/api/config', (req, res) => {
+  res.json({ ...ai.capabilities(), templates: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
+});
+
+app.get('/api/projects', (req, res) => {
+  res.json(store.list().map((p) => store.publicView(p, { withSubtitles: false })));
+});
+
+app.get('/api/projects/:id', (req, res) => {
+  res.json(store.publicView(getProject(req), { withSubtitles: req.query.subs !== '0' }));
+});
+
+app.delete('/api/projects/:id', wrap(async (req, res) => {
+  const p = getProject(req);
+  if (p.status === 'analyzing') throw httpError(409, '분석 중인 프로젝트는 삭제할 수 없습니다.');
+  store.remove(p.id);
+  res.json({ ok: true });
+}));
+
+// ───────────────────────── 업로드 ─────────────────────────
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      req.projectId = store.newId();
+      const dir = store.projectDir(req.projectId);
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, 'source' + (path.extname(file.originalname).toLowerCase().replace(/[^.a-z0-9]/g, '') || '.mp4')),
+  }),
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+  fileFilter: (req, file, cb) => {
+    const ok = file.mimetype.startsWith('video/') || /\.(mp4|mov|mkv|avi|webm|m4v)$/i.test(file.originalname);
+    cb(ok ? null : httpError(400, '동영상 파일(MP4, MOV, MKV, WEBM 등)만 업로드할 수 있습니다.'), ok);
+  },
+});
+
+app.post('/api/projects', upload.single('video'), wrap(async (req, res) => {
+  const id = req.projectId;
+  const cleanup = () => store.remove(id);
+  if (!req.file) { if (id) cleanup(); throw httpError(400, '영상 파일이 없습니다.'); }
+  const dir = store.projectDir(id);
+  let info;
+  try {
+    info = await ff.probe(req.file.path);
+    if (!info.duration || info.duration < 5) throw httpError(400, '영상 길이를 확인할 수 없거나 너무 짧습니다.');
+    if (info.duration > MAX_DURATION_SEC) throw httpError(400, `영상이 너무 깁니다. 최대 ${MAX_DURATION_SEC / 60}분까지 지원합니다.`);
+    await ff.makeThumbnail(req.file.path, path.join(dir, 'thumb.jpg'), Math.min(info.duration / 4, 30));
+  } catch (e) {
+    cleanup();
+    throw e.status ? e : httpError(400, `영상을 읽을 수 없습니다: ${e.message.split('\n')[0]}`);
+  }
+  const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  const name = (req.body?.name || originalName.replace(/\.[^.]+$/, '')).slice(0, 80);
+  const p = store.create({
+    id, name, createdAt: Date.now(), status: 'uploaded', progress: null, error: null,
+    video: { file: req.file.filename, ...info, proxy: false },
+    subtitles: [], transcript: [], clips: [], analysis: null,
+  });
+  res.status(201).json(store.publicView(p));
+  // 미리보기용 프록시를 백그라운드에서 생성
+  ff.makeProxy(req.file.path, path.join(dir, 'proxy.mp4'))
+    .then(() => { p.video.proxy = true; store.save(p); })
+    .catch((e) => console.error('proxy 생성 실패:', e.message));
+}));
+
+app.get('/media/:id/:kind', (req, res) => {
+  const p = store.get(req.params.id);
+  if (!p) return res.sendStatus(404);
+  const dir = store.projectDir(p.id);
+  const map = { source: p.video.file, proxy: 'proxy.mp4', thumb: 'thumb.jpg' };
+  const f = map[req.params.kind];
+  if (!f) return res.sendStatus(404);
+  const full = path.join(dir, f);
+  if (!fs.existsSync(full)) return res.sendStatus(404);
+  res.sendFile(full);
+});
+
+// ───────────────────────── AI 분석 ─────────────────────────
+
+app.post('/api/projects/:id/analyze', wrap(async (req, res) => {
+  const p = getProject(req);
+  if (p.status === 'analyzing') throw httpError(409, '이미 분석 중입니다.');
+  const cap = ai.capabilities();
+  if (!cap.transcription) throw httpError(400, 'OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요. (키 없이 화면만 보려면 MOCK_AI=1)');
+  if (!p.video.hasAudio && !MOCK_AI) throw httpError(400, '오디오 트랙이 없는 영상은 분석할 수 없습니다.');
+  const b = req.body || {};
+  const minLen = clampInt(b.minLen, 10, 120, 30);
+  const maxLen = Math.max(minLen + 5, clampInt(b.maxLen, 15, 180, 60));
+  const opts = { minLen, maxLen, count: clampInt(b.count, 1, 10, 5), language: ['ko', 'en', 'ja', 'auto'].includes(b.language) ? b.language : 'ko' };
+  p.status = 'analyzing';
+  p.error = null;
+  p.progress = { step: 'audio', pct: 0, message: '오디오 추출 중' };
+  p.analysis = opts;
+  store.save(p);
+  res.status(202).json(store.publicView(p));
+  runAnalysis(p, opts).catch((e) => {
+    console.error('분석 실패:', e);
+    p.status = 'error';
+    p.error = e.message;
+    store.save(p);
+  });
+}));
+
+const clampInt = (v, lo, hi, d) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d;
+};
+
+async function runAnalysis(p, opts) {
+  const dir = store.projectDir(p.id);
+  const src = path.join(dir, p.video.file);
+  const set = (step, pct, message) => { p.progress = { step, pct: Math.round(pct), message }; };
+
+  let transcript;
+  if (MOCK_AI) {
+    set('stt', 40, '데모 자막 생성 중');
+    transcript = ai.mockTranscript(p.video.duration);
+  } else {
+    set('audio', 3, '오디오 추출 중');
+    const chunks = await ff.extractAudioChunks(src, path.join(dir, 'audio'));
+    set('stt', 10, '음성 인식(STT) 중');
+    transcript = await ai.transcribeChunks(chunks, {
+      language: opts.language,
+      onProgress: (f) => set('stt', 10 + f * 55, `음성 인식(STT) 중 ${Math.round(f * 100)}%`),
+    });
+    fs.rmSync(path.join(dir, 'audio'), { recursive: true, force: true });
+  }
+  if (!transcript.length) throw new Error('영상에서 인식된 음성이 없습니다.');
+  transcript.sort((a, b) => a.start - b.start);
+  p.transcript = transcript;
+  p.subtitles = chunkSegments(transcript, { maxChars: 16 });
+
+  set('highlight', 70, 'AI가 하이라이트 구간을 고르는 중');
+  const raw = MOCK_AI
+    ? ai.mockHighlights({ duration: p.video.duration, ...opts })
+    : await ai.pickHighlights({ transcript, duration: p.video.duration, title: p.name, ...opts });
+  const picked = ai.normalizeClips(raw, { transcript, duration: p.video.duration, ...opts });
+  if (!picked.length) throw new Error('쇼츠로 만들 구간을 찾지 못했습니다. 길이 범위를 조정해 다시 시도해 보세요.');
+
+  p.clips = picked.map((c) => ({
+    id: store.newId(4), ...c, cropX: 0.5, template: 'basic', subtitleOn: true, titleOn: true, render: { status: 'idle' },
+  }));
+  p.status = 'ready';
+  p.progress = { step: 'done', pct: 100, message: '완료' };
+  store.save(p);
+}
+
+app.post('/api/projects/:id/reset', wrap(async (req, res) => {
+  const p = getProject(req);
+  if (p.status === 'analyzing' || p.clips.some((c) => ['queued', 'rendering'].includes(c.render?.status))) throw httpError(409, '작업이 진행 중입니다.');
+  fs.rmSync(path.join(store.projectDir(p.id), 'out'), { recursive: true, force: true });
+  Object.assign(p, { status: 'uploaded', clips: [], subtitles: [], transcript: [], error: null, progress: null });
+  store.save(p);
+  res.json({ ok: true });
+}));
+
+// ───────────────────────── 쇼츠 편집 ─────────────────────────
+
+app.patch('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
+  const p = getProject(req);
+  const c = getClip(p, req.params.cid);
+  if (c.render?.status === 'rendering' || c.render?.status === 'queued') throw httpError(409, '렌더링 중에는 수정할 수 없습니다.');
+  const b = req.body || {};
+  const next = { ...c };
+  if ('start' in b) next.start = Number(b.start);
+  if ('end' in b) next.end = Number(b.end);
+  if (!(next.start >= 0 && next.end <= p.video.duration + 0.01 && next.end - next.start >= 1)) throw httpError(400, '구간이 올바르지 않습니다. (최소 1초, 영상 길이 이내)');
+  if (next.end - next.start > 180) throw httpError(400, '쇼츠는 최대 3분까지 지원합니다.');
+  if ('title' in b) next.title = String(b.title).slice(0, 80);
+  if ('description' in b) next.description = String(b.description).slice(0, 2000);
+  if ('hashtags' in b && Array.isArray(b.hashtags)) next.hashtags = b.hashtags.map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean).slice(0, 15);
+  if ('cropX' in b) next.cropX = Math.min(1, Math.max(0, Number(b.cropX) || 0));
+  if ('template' in b) {
+    if (!SUB_TEMPLATES[b.template]) throw httpError(400, '알 수 없는 템플릿입니다.');
+    next.template = b.template;
+  }
+  for (const k of ['subtitleOn', 'titleOn']) if (k in b) next[k] = !!b[k];
+  Object.assign(c, next);
+  if (c.render?.status === 'done') c.render.stale = true;
+  store.save(p);
+  res.json(c);
+}));
+
+app.post('/api/projects/:id/clips', wrap(async (req, res) => {
+  const p = getProject(req);
+  if (p.status === 'analyzing') throw httpError(409, '분석 중입니다.');
+  const start = Math.max(0, Number(req.body?.start) || 0);
+  const end = Math.min(p.video.duration, Number(req.body?.end) || start + 30);
+  if (end - start < 1) throw httpError(400, '구간이 올바르지 않습니다.');
+  const c = { id: store.newId(4), start, end, title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, template: 'basic', subtitleOn: true, titleOn: true, render: { status: 'idle' } };
+  p.clips.push(c);
+  if (p.status === 'uploaded') p.status = 'ready';
+  store.save(p);
+  res.status(201).json(c);
+}));
+
+app.delete('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
+  const p = getProject(req);
+  const c = getClip(p, req.params.cid);
+  if (c.render?.status === 'rendering' || c.render?.status === 'queued') throw httpError(409, '렌더링 중에는 삭제할 수 없습니다.');
+  p.clips = p.clips.filter((x) => x !== c);
+  fs.rmSync(path.join(store.projectDir(p.id), 'out', `${c.id}.mp4`), { force: true });
+  store.save(p);
+  res.json({ ok: true });
+}));
+
+app.patch('/api/projects/:id/subtitles', wrap(async (req, res) => {
+  const p = getProject(req);
+  const { updates = [], deletes = [], adds = [] } = req.body || {};
+  const byId = new Map(p.subtitles.map((s) => [s.id, s]));
+  for (const u of updates) {
+    const s = byId.get(u.id);
+    if (!s) continue;
+    if (typeof u.text === 'string') s.text = u.text.slice(0, 200);
+    if (Number.isFinite(u.start)) s.start = u.start;
+    if (Number.isFinite(u.end)) s.end = u.end;
+  }
+  if (deletes.length) {
+    const del = new Set(deletes);
+    p.subtitles = p.subtitles.filter((s) => !del.has(s.id));
+  }
+  const created = [];
+  for (const a of adds) {
+    if (!(a.end > a.start)) continue;
+    const s = { id: 'u' + store.newId(4), start: Number(a.start), end: Number(a.end), text: String(a.text || '').slice(0, 200) };
+    p.subtitles.push(s);
+    created.push(s);
+  }
+  p.subtitles.sort((a, b) => a.start - b.start);
+  for (const c of p.clips) if (c.render?.status === 'done') c.render.stale = true;
+  store.save(p);
+  res.json({ ok: true, created });
+}));
+
+// ───────────────────────── 렌더링 ─────────────────────────
+
+let queue = Promise.resolve();
+
+app.post('/api/projects/:id/clips/:cid/render', wrap(async (req, res) => {
+  const p = getProject(req);
+  const c = getClip(p, req.params.cid);
+  if (c.render?.status === 'rendering' || c.render?.status === 'queued') return res.json(c);
+  c.render = { status: 'queued', pct: 0 };
+  store.save(p);
+  queue = queue.then(() => renderOne(p, c)).catch(() => {});
+  res.status(202).json(c);
+}));
+
+async function renderOne(p, c) {
+  const dir = store.projectDir(p.id);
+  const outDir = path.join(dir, 'out');
+  fs.mkdirSync(outDir, { recursive: true });
+  const outFile = path.join(outDir, `${c.id}.mp4`);
+  const tmpFile = path.join(outDir, `${c.id}.tmp.mp4`);
+  try {
+    c.render = { status: 'rendering', pct: 0 };
+    const subs = p.subtitles.filter((s) => s.end > c.start && s.start < c.end);
+    const assFile = path.join(outDir, `${c.id}.ass`);
+    fs.writeFileSync(assFile, buildAss({ clip: c, subs }));
+    await ff.renderClip({
+      src: path.join(dir, p.video.file), start: c.start, end: c.end,
+      srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, assFile,
+      hasAudio: p.video.hasAudio, out: tmpFile,
+      onProgress: (f) => { c.render.pct = Math.round(f * 100); },
+    });
+    fs.renameSync(tmpFile, outFile);
+    c.render = { status: 'done', pct: 100, size: fs.statSync(outFile).size, at: Date.now() };
+  } catch (e) {
+    console.error('렌더 실패:', e.message);
+    fs.rmSync(tmpFile, { force: true });
+    c.render = { status: 'error', error: e.message.split('\n').slice(-4).join(' ').slice(0, 300) };
+  }
+  store.save(p);
+}
+
+app.get('/api/projects/:id/clips/:cid/download', wrap(async (req, res) => {
+  const p = getProject(req);
+  const c = getClip(p, req.params.cid);
+  const file = path.join(store.projectDir(p.id), 'out', `${c.id}.mp4`);
+  if (c.render?.status !== 'done' || !fs.existsSync(file)) throw httpError(404, '아직 렌더링된 파일이 없습니다.');
+  if (req.query.inline) return res.sendFile(file);
+  const safe = (c.title || 'shorts').replace(/\s+/g, ' ').replace(/[\\/:*?"<>|\n\r]/g, '').trim().slice(0, 50) || 'shorts';
+  res.download(file, `${safe}.mp4`);
+}));
+
+// ───────────────────────── 에러 처리 ─────────────────────────
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? `파일이 너무 큽니다. 최대 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB까지 지원합니다.` : err.message;
+    return res.status(400).json({ error: msg });
+  }
+  if (!err.status) console.error(err);
+  res.status(err.status || 500).json({ error: err.status ? err.message : `서버 오류: ${err.message}` });
+});
+
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+  app.listen(PORT, () => {
+    const cap = ai.capabilities();
+    console.log(`jiyoungcut → http://localhost:${PORT}`);
+    if (cap.mock) console.log('⚠ MOCK_AI=1: 데모 모드 (실제 음성 인식/AI 분석 없음)');
+    else {
+      if (!cap.transcription) console.log('⚠ OPENAI_API_KEY 없음: 음성 인식 불가');
+      if (cap.highlightsFallback) console.log('⚠ ANTHROPIC_API_KEY 없음: 하이라이트를 단순 규칙으로 선정');
+    }
+  });
+}
+
+export default app;

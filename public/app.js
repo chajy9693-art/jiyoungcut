@@ -184,6 +184,7 @@ function setupPage(p, templates) {
       <div class="field"><label>쇼츠 길이</label><select id="len">
         <option value="15-30">15~30초</option><option value="30-60" selected>30~60초</option><option value="60-90">60~90초</option><option value="45-120">45~120초</option></select></div>
       <div class="field"><label>후보 개수</label><select id="count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></div>
+      <div class="field"><label>편집 방식</label><select id="mode"><option value="context" selected>맥락 편집 (후킹·군더더기 제거)</option><option value="single">단순 구간 (연속 한 구간)</option></select></div>
       <div class="field"><label>템플릿</label><select id="tplsel">${templates.map((t) => `<option value="${t.id}">${esc(t.name)}${t.account ? ' · ' + esc(t.account) : ''}</option>`).join('')}</select></div>
       <div class="field"><label>영상 언어</label><select id="lang"><option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option><option value="auto">자동 감지</option></select></div>
       <button class="btn primary big" id="go" style="margin-left:auto">AI로 쇼츠 찾기 →</button></div></div></div>`);
@@ -192,7 +193,7 @@ function setupPage(p, templates) {
     e.target.disabled = true;
     const [minLen, maxLen] = page.querySelector('#len').value.split('-').map(Number);
     try {
-      await api(`/api/projects/${p.id}/analyze`, { method: 'POST', body: { minLen, maxLen, count: +page.querySelector('#count').value, language: page.querySelector('#lang').value, templateId: page.querySelector('#tplsel').value } });
+      await api(`/api/projects/${p.id}/analyze`, { method: 'POST', body: { minLen, maxLen, count: +page.querySelector('#count').value, language: page.querySelector('#lang').value, templateId: page.querySelector('#tplsel').value, mode: page.querySelector('#mode').value } });
       route();
     } catch (err) { toast(err.message, true); e.target.disabled = false; }
   };
@@ -214,10 +215,16 @@ function analyzingPage(p) {
 // ───────────────────────── 에디터 ─────────────────────────
 
 function editorPage(p, templates) {
-  const S = { p, sel: p.clips[0].id, t: 0, playing: false };
+  const S = { p, sel: p.clips[0].id, seg: 0, cur: 0, t: 0, playing: false };
   const clip = () => S.p.clips.find((c) => c.id === S.sel);
   const src = p.video.proxy ? `/media/${p.id}/proxy` : `/media/${p.id}/source`;
-  const subsIn = (c) => S.p.subtitles.filter((s) => s.end > c.start && s.start < c.end);
+  const subsIn = (c) => S.p.subtitles.filter((s) => c.segments.some((g) => s.end > g.start && s.start < g.end));
+  const segTotal = (c) => c.segments.reduce((n, g) => n + g.end - g.start, 0);
+  const segOffset = (c, i) => c.segments.slice(0, i).reduce((n, g) => n + g.end - g.start, 0);
+  const segIdxOf = (c, t) => c.segments.findIndex((g) => t >= g.start - 0.001 && t < g.end);
+  const syncBounds = (c) => { c.start = Math.min(...c.segments.map((g) => g.start)); c.end = Math.max(...c.segments.map((g) => g.end)); };
+  const outStart = (c, s) => { const i = c.segments.findIndex((g) => s.end > g.start && s.start < g.end); return i < 0 ? Infinity : segOffset(c, i) + Math.max(0, s.start - c.segments[i].start); };
+  const ROLE = { hook: '후킹', body: '본론', ending: '마무리' };
   const tplOf = (c) => templates.find((t) => t.id === c.templateId) || templates[0];
   const videoW = () => (tplOf(clip()).layout === 'framed' ? aspect * 100 : aspect * (16 / 9) * 100);
 
@@ -225,14 +232,15 @@ function editorPage(p, templates) {
   const root = el(`<div class="editor">
     <div class="col left"><a class="back" href="#/">← 프로젝트</a><h3>AI 추천 쇼츠 <span class="meta" style="display:inline">(${p.clips.length})</span></h3>
       <div class="cliplist" id="list"></div>
-      <div style="display:grid;gap:8px;margin-top:14px"><button class="btn" id="addclip">＋ 현재 위치에서 구간 추가</button><button class="btn" id="reanalyze">다시 분석</button></div></div>
+      <div style="display:grid;gap:8px;margin-top:14px"><button class="btn" id="addclip">＋ 현재 위치에서 새 쇼츠 추가</button><button class="btn" id="reanalyze">다시 분석</button></div></div>
     <div class="col center">
       <div class="topbar"><span class="name">${esc(p.name)}</span></div>
       <div class="phone" id="phone"><video id="vid" src="${src}" preload="auto" playsinline></video></div>
       <div class="hint">미리보기를 좌우로 드래그해 크롭 위치를 조정하세요</div>
       <div class="transport"><button class="btn" id="play">▶ 재생</button><span id="time" class="meta"></span></div>
       <div class="timeline"><div class="tl" id="tl"></div><div class="tl-labels"><span id="tl0"></span><span id="tl1"></span></div>
-        <div class="times"><div class="field"><label>시작</label><input type="text" id="tin"></div><div class="field"><label>종료</label><input type="text" id="tout"></div><div class="field"><label>길이</label><input type="text" id="tlen" disabled></div></div></div>
+        <div class="times"><div class="field"><label>선택 구간 시작</label><input type="text" id="tin"></div><div class="field"><label>선택 구간 종료</label><input type="text" id="tout"></div><div class="field"><label>선택 구간 길이</label><input type="text" id="tlen" disabled></div></div></div>
+      <div class="segs" id="segs"></div>
     </div>
     <div class="col right" id="right"></div></div>`);
   $app.append(root);
@@ -247,17 +255,26 @@ function editorPage(p, templates) {
 
   // ── 저장 (디바운스) ──
   const pending = new Map();
+  async function reloadClips() {
+    try {
+      const q = await api(`/api/projects/${p.id}?subs=0`);
+      for (const qc of q.clips) { const c = S.p.clips.find((x) => x.id === qc.id); if (c) Object.assign(c, qc); }
+      S.seg = Math.min(S.seg, clip().segments.length - 1); S.cur = Math.min(S.cur, clip().segments.length - 1);
+      computeWin(); renderAllCenter(); renderRight();
+    } catch {}
+  }
   const flushClip = debounce(async () => {
     for (const [id, patch] of [...pending]) {
       pending.delete(id);
       try { const c = await api(`/api/projects/${p.id}/clips/${id}`, { method: 'PATCH', body: patch }); Object.assign(S.p.clips.find((x) => x.id === id), c); }
-      catch (e) { toast(e.message, true); }
+      catch (e) { toast(e.message, true); await reloadClips(); }
     }
-    renderList(); renderRender();
+    renderList(); renderRender(); renderSegs();
   }, 500);
   function patchClip(patch) {
     const c = clip();
     Object.assign(c, patch);
+    if (patch.segments) { syncBounds(c); patch = { segments: c.segments }; }
     if (c.render?.status === 'done') c.render.stale = true;
     pending.set(c.id, { ...(pending.get(c.id) || {}), ...patch });
     flushClip();
@@ -267,14 +284,16 @@ function editorPage(p, templates) {
   function renderList() {
     const box = $('#list'); box.innerHTML = '';
     S.p.clips.forEach((c, i) => {
-      const it = el(`<div class="clipitem ${c.id === S.sel ? 'sel' : ''}"><div class="meta"><span class="score">${c.score ? `★ ${c.score}` : '직접 추가'}</span><span>${fmt(c.start)}–${fmt(c.end)} · ${Math.round(c.end - c.start)}초</span></div>
-        <div class="t">${esc(c.title || `쇼츠 ${i + 1}`)}</div>${c.reason ? `<div class="meta">${esc(c.reason)}</div>` : ''}
+      const n = c.segments.length;
+      const it = el(`<div class="clipitem ${c.id === S.sel ? 'sel' : ''}"><div class="meta"><span class="score">${c.score ? `★ ${c.score}` : '직접 추가'}</span><span>${Math.round(segTotal(c))}초${n > 1 ? ` · ${n}개 구간 편집` : ''}</span></div>
+        <div class="t">${esc(c.title || `쇼츠 ${i + 1}`)}</div>${c.summary ? `<div class="meta flow">${esc(c.summary)}</div>` : c.reason ? `<div class="meta">${esc(c.reason)}</div>` : ''}
         ${c.render?.status === 'done' ? `<span class="badge ${c.render.stale ? 'warn' : 'ok'}">${c.render.stale ? '수정됨' : '렌더 완료'}</span>` : ''}</div>`);
       it.onclick = () => select(c.id);
       box.append(it);
     });
   }
-  function select(id) { S.sel = id; renderList(); renderRight(); computeWin(); renderTimeline(); seek(clip().start); updatePreview(); }
+  function select(id) { S.sel = id; S.seg = 0; S.cur = 0; renderList(); renderRight(); computeWin(); renderAllCenter(); seek(clip().segments[0].start); updatePreview(); }
+  function renderAllCenter() { renderTimeline(); renderSegs(); }
 
   // ── 미리보기 ──
   function seek(t) { vid.currentTime = t; S.t = t; }
@@ -285,22 +304,37 @@ function editorPage(p, templates) {
     else { vid.style.width = '100%'; vid.style.left = '0'; vid.style.objectFit = 'cover'; }
     const s = c.subtitleOn ? subsIn(c).find((x) => S.t >= x.start && S.t < x.end) : null;
     paintPhone(phone, tpl, { title: c.titleOn ? titleLines(c.title) : [], sub: s?.text || '' });
-    $('#time').textContent = `${fmtP(Math.max(0, S.t - c.start))} / ${fmtP(c.end - c.start)}`;
+    const idx = S.playing ? S.cur : Math.max(0, segIdxOf(c, S.t));
+    const g = c.segments[idx];
+    const out = segOffset(c, idx) + Math.min(Math.max(0, S.t - g.start), g.end - g.start);
+    $('#time').textContent = `${fmtP(out)} / ${fmtP(segTotal(c))}`;
     root.querySelectorAll('.subrow').forEach((r) => r.classList.toggle('active', r.dataset.id === s?.id));
+    root.querySelectorAll('.segrow').forEach((r) => r.classList.toggle('playing', S.playing && +r.dataset.i === S.cur));
     renderHead();
   }
-  vid.addEventListener('timeupdate', () => {
+  // 재생 중에는 구간 경계를 프레임 단위로 감시해 다음 구간으로 건너뛴다 (실제 렌더 결과와 같은 흐름)
+  function loop() {
+    if (!S.playing) return;
     const c = clip();
     S.t = vid.currentTime;
-    if (S.playing && S.t >= c.end) { seek(c.start); }
+    const g = c.segments[S.cur];
+    if (S.t >= g.end - 0.03 || S.t < g.start - 0.5) {
+      S.cur = (S.cur + 1) % c.segments.length;
+      seek(c.segments[S.cur].start);
+    }
     updatePreview();
-  });
+    requestAnimationFrame(loop);
+  }
+  vid.addEventListener('timeupdate', () => { if (!S.playing) { S.t = vid.currentTime; updatePreview(); } });
   vid.addEventListener('error', () => toast('브라우저에서 이 영상을 재생할 수 없습니다. 잠시 후 다시 시도하세요(미리보기 변환 중일 수 있음).', true));
+  function stop() { vid.pause(); S.playing = false; $('#play').textContent = '▶ 재생'; }
   $('#play').onclick = () => {
     const c = clip();
-    if (S.playing) { vid.pause(); S.playing = false; $('#play').textContent = '▶ 재생'; return; }
-    if (S.t < c.start || S.t >= c.end - 0.1) seek(c.start);
-    vid.play(); S.playing = true; $('#play').textContent = '⏸ 일시정지';
+    if (S.playing) { stop(); return; }
+    const i = segIdxOf(c, S.t);
+    if (i < 0) { S.cur = 0; seek(c.segments[0].start); } else S.cur = i;
+    S.playing = true; vid.play(); $('#play').textContent = '⏸ 일시정지';
+    requestAnimationFrame(loop);
   };
 
   // 크롭 드래그
@@ -318,50 +352,100 @@ function editorPage(p, templates) {
   const endDrag = () => { if (drag) { drag = null; patchClip({ cropX: clip().cropX }); } };
   phone.addEventListener('pointerup', endDrag); phone.addEventListener('pointercancel', endDrag);
 
-  // ── 타임라인 ──
+  // ── 타임라인 (선택한 구간 중심) ──
+  const selSeg = () => clip().segments[S.seg];
   function computeWin() {
-    const c = clip(); const len = c.end - c.start; const pad = Math.max(20, len * 0.8);
-    win = [Math.max(0, c.start - pad), Math.min(p.video.duration, c.end + pad)];
+    const g = selSeg(); const len = g.end - g.start; const pad = Math.max(20, len * 0.8);
+    win = [Math.max(0, g.start - pad), Math.min(p.video.duration, g.end + pad)];
   }
   const pos = (t) => ((t - win[0]) / (win[1] - win[0])) * 100;
+  const block = (cls, a, b, extra = '') => { const l = pos(Math.max(a, win[0])); return `<div class="${cls}" style="left:${l}%;width:${pos(Math.min(b, win[1])) - l}%">${extra}</div>`; };
   function renderTimeline() {
-    const c = clip(); const tl = $('#tl');
+    const c = clip(); const g = selSeg(); const tl = $('#tl');
     tl.innerHTML = '';
-    for (const o of S.p.clips) if (o !== c && o.end > win[0] && o.start < win[1]) tl.append(el(`<div class="other" style="left:${pos(Math.max(o.start, win[0]))}%;width:${pos(Math.min(o.end, win[1])) - pos(Math.max(o.start, win[0]))}%"></div>`));
-    tl.append(el(`<div class="sel" style="left:${pos(c.start)}%;width:${pos(c.end) - pos(c.start)}%"></div>`));
-    tl.append(el(`<div class="handle" data-h="start" style="left:${pos(c.start)}%"></div>`));
-    tl.append(el(`<div class="handle" data-h="end" style="left:${pos(c.end)}%"></div>`));
-    tl.append(el('<div class="head" id="head"></div>'));
+    for (const o of S.p.clips) if (o !== c) for (const og of o.segments) if (og.end > win[0] && og.start < win[1]) tl.insertAdjacentHTML('beforeend', block('other', og.start, og.end));
+    c.segments.forEach((sg, i) => { if (i !== S.seg && sg.end > win[0] && sg.start < win[1]) tl.insertAdjacentHTML('beforeend', block('sib', sg.start, sg.end, `<i>${i + 1}</i>`)); });
+    tl.insertAdjacentHTML('beforeend', block('sel', g.start, g.end, `<i>${S.seg + 1}</i>`));
+    tl.insertAdjacentHTML('beforeend', `<div class="handle" data-h="start" style="left:${pos(g.start)}%"></div><div class="handle" data-h="end" style="left:${pos(g.end)}%"></div><div class="head" id="head"></div>`);
     $('#tl0').textContent = fmt(win[0]); $('#tl1').textContent = fmt(win[1]);
-    $('#tin').value = fmtP(c.start); $('#tout').value = fmtP(c.end); $('#tlen').value = `${(c.end - c.start).toFixed(1)}초`;
+    $('#tin').value = fmtP(g.start); $('#tout').value = fmtP(g.end); $('#tlen').value = `${(g.end - g.start).toFixed(1)}초`;
     renderHead();
   }
   function renderHead() { const h = root.querySelector('#head'); if (h) h.style.left = `${Math.min(100, Math.max(0, pos(S.t)))}%`; }
+  // 다른 구간과 겹치지 않는 범위
+  function bounds(c, i) {
+    const g = c.segments[i]; let lo = 0, hi = p.video.duration;
+    c.segments.forEach((o, j) => { if (j === i) return; if (o.end <= g.start + 1e-6) lo = Math.max(lo, o.end); if (o.start >= g.end - 1e-6) hi = Math.min(hi, o.start); });
+    return [lo, hi];
+  }
   const tlEl = $('#tl');
   let th = null;
   tlEl.addEventListener('pointerdown', (e) => {
     const h = e.target.dataset?.h;
-    if (!h) { const r = tlEl.getBoundingClientRect(); seek(win[0] + ((e.clientX - r.left) / r.width) * (win[1] - win[0])); return; }
-    th = h; tlEl.setPointerCapture(e.pointerId);
+    if (!h) { const r = tlEl.getBoundingClientRect(); stop(); seek(win[0] + ((e.clientX - r.left) / r.width) * (win[1] - win[0])); return; }
+    th = { h, lim: bounds(clip(), S.seg) }; tlEl.setPointerCapture(e.pointerId);
   });
   tlEl.addEventListener('pointermove', (e) => {
     if (!th) return;
-    const r = tlEl.getBoundingClientRect(); const c = clip();
+    const r = tlEl.getBoundingClientRect(); const g = selSeg();
     let t = win[0] + (Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))) * (win[1] - win[0]);
     t = Math.round(t * 10) / 10;
-    if (th === 'start') c.start = Math.min(t, c.end - 1); else c.end = Math.max(t, c.start + 1);
-    if (c.end - c.start > 180) { if (th === 'start') c.start = c.end - 180; else c.end = c.start + 180; }
-    renderTimeline(); updatePreview();
+    if (th.h === 'start') g.start = Math.max(th.lim[0], Math.min(t, g.end - 1)); else g.end = Math.min(th.lim[1], Math.max(t, g.start + 1));
+    syncBounds(clip()); renderTimeline(); updatePreview();
   });
-  const endTl = () => { if (!th) return; const h = th; th = null; const c = clip(); patchClip({ start: c.start, end: c.end }); seek(h === 'start' ? c.start : Math.max(c.start, c.end - 2)); computeWin(); renderTimeline(); renderRight(); };
+  const endTl = () => {
+    if (!th) return; const h = th.h; th = null; const c = clip(); const g = selSeg();
+    stop(); patchClip({ segments: c.segments }); seek(h === 'start' ? g.start : Math.max(g.start, g.end - 2)); S.cur = S.seg; computeWin(); renderAllCenter(); renderRight();
+  };
   tlEl.addEventListener('pointerup', endTl); tlEl.addEventListener('pointercancel', endTl);
   const timeInput = (id, key) => $(id).addEventListener('change', (e) => {
-    const v = parseT(e.target.value); const c = clip();
-    const ns = key === 'start' ? v : c.start, ne = key === 'end' ? v : c.end;
-    if (!(ns >= 0 && ne <= p.video.duration && ne - ns >= 1 && ne - ns <= 180)) { toast('올바른 시간(1~180초 길이)을 입력하세요. 예) 1:23.5', true); renderTimeline(); return; }
-    patchClip({ start: ns, end: ne }); computeWin(); renderTimeline(); renderRight(); seek(ns);
+    const v = parseT(e.target.value); const c = clip(); const g = selSeg(); const [lo, hi] = bounds(c, S.seg);
+    const ns = key === 'start' ? v : g.start, ne = key === 'end' ? v : g.end;
+    if (!(ns >= lo && ne <= hi && ne - ns >= 1)) { toast(`올바른 시간을 입력하세요 (이 구간은 ${fmtP(lo)} ~ ${fmtP(hi)} 사이, 최소 1초). 예) 1:23.5`, true); renderTimeline(); return; }
+    stop(); g.start = ns; g.end = ne; patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); seek(ns); S.cur = S.seg;
   });
   timeInput('#tin', 'start'); timeInput('#tout', 'end');
+
+  // ── 영상 구성 (이어 붙일 구간 목록) ──
+  function excerpt(g) { const s = S.p.subtitles.find((x) => x.end > g.start && x.start < g.end && x.text); return s ? s.text : ''; }
+  function renderSegs() {
+    const c = clip(); const box = $('#segs'); const n = c.segments.length;
+    box.innerHTML = `<div class="segs-head"><b>영상 구성</b><span class="meta">${n}개 구간 · 총 ${segTotal(c).toFixed(1)}초 · 위에서 아래 순서로 이어 붙여 재생됩니다</span><button class="btn sm" id="addseg">＋ 구간 추가</button></div>`;
+    c.segments.forEach((g, i) => {
+      const row = el(`<div class="segrow ${i === S.seg ? 'sel' : ''}" data-i="${i}">
+        <span class="no">${i + 1}</span>
+        <select class="role ${g.role || 'body'}">${Object.entries(ROLE).map(([k, v]) => `<option value="${k}" ${(g.role || 'body') === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <span class="rng">${fmtP(g.start)}–${fmtP(g.end)} <em>${(g.end - g.start).toFixed(1)}초</em></span>
+        <span class="ex">${esc(excerpt(g))}</span>
+        <button class="x" data-a="up" title="위로" ${i === 0 ? 'disabled' : ''}>▲</button><button class="x" data-a="down" title="아래로" ${i === n - 1 ? 'disabled' : ''}>▼</button><button class="x" data-a="del" title="삭제" ${n === 1 ? 'disabled' : ''}>✕</button></div>`);
+      row.onclick = (e) => {
+        const a = e.target.dataset?.a;
+        if (e.target.tagName === 'SELECT' || e.target.tagName === 'OPTION') return;
+        if (a) {
+          stop();
+          if (a === 'del') { c.segments.splice(i, 1); S.seg = Math.min(S.seg, c.segments.length - 1); }
+          else { const j = a === 'up' ? i - 1 : i + 1; [c.segments[i], c.segments[j]] = [c.segments[j], c.segments[i]]; S.seg = j; }
+          S.cur = S.seg; patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); seek(selSeg().start); updatePreview(); renderList();
+          return;
+        }
+        stop(); S.seg = i; S.cur = i; computeWin(); renderAllCenter(); seek(g.start); updatePreview();
+      };
+      row.querySelector('select').onchange = (e) => { g.role = e.target.value; e.target.className = `role ${g.role}`; patchClip({ segments: c.segments }); };
+      box.append(row);
+    });
+    $('#addseg').onclick = () => {
+      stop();
+      let start = Math.min(S.t, p.video.duration - 1);
+      const inside = c.segments.find((g) => start >= g.start && start < g.end);
+      if (inside) start = inside.end;
+      let end = Math.min(p.video.duration, start + 8);
+      for (const g of c.segments) if (g.start >= start && g.start < end) end = g.start;
+      if (end - start < 1) { toast('현재 위치에 구간을 추가할 공간이 없습니다. 재생 위치를 옮겨 보세요.', true); return; }
+      c.segments.push({ start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10, role: 'body' });
+      S.seg = c.segments.length - 1; S.cur = S.seg;
+      patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); renderList(); seek(selSeg().start); updatePreview();
+    };
+  }
 
   // ── 오른쪽 패널 ──
   const subSave = { updates: new Map(), deletes: new Set() };
@@ -409,9 +493,10 @@ function editorPage(p, templates) {
       select(S.p.clips[0].id);
     };
     q('#addsub').onclick = async () => {
-      const t = Math.min(Math.max(S.t, c.start), c.end - 0.5);
+      const cg = c.segments[Math.max(0, segIdxOf(c, S.t))];
+      const t = Math.min(Math.max(S.t, cg.start), cg.end - 0.5);
       try {
-        const res = await api(`/api/projects/${p.id}/subtitles`, { method: 'PATCH', body: { adds: [{ start: t, end: Math.min(c.end, t + 2), text: '새 자막' }] } });
+        const res = await api(`/api/projects/${p.id}/subtitles`, { method: 'PATCH', body: { adds: [{ start: t, end: Math.min(cg.end, t + 2), text: '새 자막' }] } });
         S.p.subtitles.push(...res.created); S.p.subtitles.sort((a, b) => a.start - b.start); renderSubRows(); updatePreview(); renderList(); renderRender();
       } catch (e) { toast(e.message, true); }
     };
@@ -420,11 +505,13 @@ function editorPage(p, templates) {
 
   function renderSubRows() {
     const c = clip(); const box = root.querySelector('#subrows'); if (!box) return;
-    const subs = subsIn(c);
+    const subs = subsIn(c).sort((x, y) => outStart(c, x) - outStart(c, y));
     box.innerHTML = subs.length ? '' : '<div class="meta">이 구간에는 자막이 없습니다.</div>';
     for (const s of subs) {
-      const row = el(`<div class="subrow" data-id="${s.id}"><span class="tm">${fmtP(s.start - c.start)}</span><input type="text" value="${esc(s.text)}"><button class="x" title="삭제">✕</button></div>`);
-      row.querySelector('.tm').onclick = () => seek(Math.max(c.start, s.start));
+      const si = c.segments.findIndex((g) => s.end > g.start && s.start < g.end);
+      const sg = c.segments[si];
+      const row = el(`<div class="subrow" data-id="${s.id}"><span class="tm">${fmtP(outStart(c, s))}</span><input type="text" value="${esc(s.text)}"><button class="x" title="삭제">✕</button></div>`);
+      row.querySelector('.tm').onclick = () => { stop(); S.cur = si; seek(Math.max(sg.start, s.start)); };
       row.querySelector('input').oninput = (e) => { s.text = e.target.value; subSave.updates.set(s.id, s.text); flushSubs(); updatePreview(); };
       row.querySelector('.x').onclick = () => { S.p.subtitles = S.p.subtitles.filter((x) => x !== s); subSave.deletes.add(s.id); subSave.updates.delete(s.id); flushSubs(); renderSubRows(); updatePreview(); };
       box.append(row);
@@ -482,9 +569,9 @@ function editorPage(p, templates) {
     try { await api(`/api/projects/${p.id}/reset`, { method: 'POST' }); route(); } catch (e) { toast(e.message, true); }
   };
 
-  cleanup = () => { vid.pause(); };
-  renderList(); renderRight(); computeWin(); renderTimeline();
-  vid.addEventListener('loadedmetadata', () => { seek(clip().start); updatePreview(); }, { once: true });
+  cleanup = () => { S.playing = false; vid.pause(); };
+  renderList(); renderRight(); computeWin(); renderAllCenter();
+  vid.addEventListener('loadedmetadata', () => { seek(clip().segments[0].start); updatePreview(); }, { once: true });
   updatePreview(); schedulePoll();
 }
 

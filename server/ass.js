@@ -25,6 +25,25 @@ export function assTime(sec) {
   return `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(cs % 100).padStart(2, '0')}`;
 }
 
+/** 클립의 구간 목록 (구버전 데이터는 start/end 하나로 대체) */
+export const segmentsOf = (clip) => (clip.segments?.length ? clip.segments : [{ start: clip.start, end: clip.end }]);
+export const totalDuration = (segs) => segs.reduce((n, s) => n + (s.end - s.start), 0);
+
+/** 원본 시간 기준 자막을 이어 붙인 결과물의 타임라인(0초 시작)으로 변환 */
+export function timelineSubs(segs, subs) {
+  const out = [];
+  let offset = 0;
+  for (const seg of segs) {
+    for (const s of subs) {
+      const a = Math.max(seg.start, s.start);
+      const b = Math.min(seg.end, s.end);
+      if (b - a >= 0.05) out.push({ start: offset + (a - seg.start), end: offset + (b - seg.start), text: s.text });
+    }
+    offset += seg.end - seg.start;
+  }
+  return out;
+}
+
 const esc = (t) => String(t).replace(/\\/g, '＼').replace(/[{}]/g, '').replace(/\r?\n/g, '\\N');
 
 /**
@@ -35,7 +54,8 @@ const esc = (t) => String(t).replace(/\\/g, '＼').replace(/[{}]/g, '').replace(
 export function buildAss({ clip, subs, tpl }) {
   const sub = SUB_TEMPLATES[tpl.subStyle] || SUB_TEMPLATES.basic;
   const framed = tpl.layout === 'framed';
-  const dur = clip.end - clip.start;
+  const segs = segmentsOf(clip);
+  const dur = totalDuration(segs);
   const lines = [];
   lines.push('[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${OUT_W}`, `PlayResY: ${OUT_H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '');
   lines.push('[V4+ Styles]');
@@ -58,11 +78,8 @@ export function buildAss({ clip, subs, tpl }) {
     lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Account,,0,0,0,,{\\an5\\pos(${OUT_W / 2},${y})}${esc(tpl.account)}`);
   }
   if (clip.subtitleOn !== false) {
-    for (const s of subs) {
-      const a = Math.max(clip.start, s.start) - clip.start;
-      const b = Math.min(clip.end, s.end) - clip.start;
-      if (b - a < 0.05) continue;
-      lines.push(`Dialogue: 1,${assTime(a)},${assTime(b)},Sub,,0,0,0,,${esc(s.text)}`);
+    for (const s of timelineSubs(segs, subs)) {
+      lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,${esc(s.text)}`);
     }
   }
   return lines.join('\n') + '\n';

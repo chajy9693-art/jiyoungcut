@@ -41,24 +41,37 @@ function titleLines(t) {
   return [t.slice(0, best).trim(), t.slice(best + 1).trim()];
 }
 
-const PHONE_HTML = '<div class="vwrap"></div><div class="ov-title"></div><div class="ov-sub"></div><div class="ov-acc"></div>';
+const PHONE_HTML = '<div class="vwrap"></div><div class="ov ov-title"></div><div class="ov ov-sub"></div><div class="ov ov-acc"></div><div class="gv"></div><div class="gh"></div>';
 
-/** 템플릿(레이아웃/색/계정명)을 9:16 미리보기 박스에 반영 — 편집기와 템플릿 설정 화면이 공용 */
-function paintPhone(phone, tpl, { title = [], sub = '' } = {}) {
+/**
+ * 템플릿(레이아웃·폰트·색·위치·계정명)을 9:16 미리보기 박스에 반영 — 편집기와 템플릿 설정 화면이 공용.
+ * 좌표는 캔버스 비율(요소 중심), 크기는 1080x1920 기준 px를 cqw로 환산해 실제 렌더링과 같은 비율을 유지한다.
+ */
+function paintPhone(phone, tpl, { title = [], sub = '', accountPlaceholder = '' } = {}) {
   const framed = tpl.layout === 'framed';
   phone.classList.toggle('framed', framed);
   phone.style.background = framed ? tpl.bgColor : '#000';
+  const put = (el, x, y, font, size) => {
+    el.style.left = `${x * 100}%`; el.style.top = `${y * 100}%`;
+    el.style.fontFamily = `'jy-${font}', sans-serif`; el.style.fontSize = `${size / 10.8}cqw`;
+  };
   const t = phone.querySelector('.ov-title');
-  t.style.fontSize = `${tpl.titleSize / 10.8}cqw`;
+  put(t, tpl.titleX, tpl.titleY, tpl.titleFont, tpl.titleSize);
   t.style.color = tpl.titleColor1;
+  t.hidden = !title.length;
   t.innerHTML = !title.length ? '' : title.length === 1 ? esc(title[0]) : `${esc(title[0])}\n<b style="color:${esc(tpl.titleColor2)}">${esc(title[1])}</b>`;
   const s = phone.querySelector('.ov-sub');
-  s.className = `ov-sub ${tpl.subStyle}`;
+  put(s, tpl.subX, tpl.subY, tpl.subFont, tpl.subSize);
+  s.className = `ov ov-sub ${tpl.subStyle}`;
+  s.hidden = !sub;
   s.innerHTML = sub ? `<span>${esc(sub)}</span>` : '';
   const a = phone.querySelector('.ov-acc');
-  a.textContent = tpl.account || '';
-  a.style.fontSize = `${tpl.accountSize / 10.8}cqw`;
+  put(a, tpl.accountX, tpl.accountY, tpl.accountFont, tpl.accountSize);
   a.style.color = tpl.accountColor;
+  const accText = tpl.account || accountPlaceholder;
+  a.className = `ov ov-acc${tpl.accountOutline ? '' : ' noline'}${!tpl.account && accountPlaceholder ? ' ph' : ''}`;
+  a.hidden = !accText;
+  a.textContent = accText;
 }
 
 // ───────────────────────── 라우터 ─────────────────────────
@@ -577,18 +590,34 @@ function editorPage(p, templates) {
 
 // ───────────────────────── 템플릿 설정 ─────────────────────────
 
+const EL_META = {
+  title: { label: '제목', node: '.ov-title', x: 'titleX', y: 'titleY', font: 'titleFont', size: 'titleSize', min: 40, max: 130 },
+  sub: { label: '자막', node: '.ov-sub', x: 'subX', y: 'subY', font: 'subFont', size: 'subSize', min: 36, max: 110 },
+  account: { label: '계정명', node: '.ov-acc', x: 'accountX', y: 'accountY', font: 'accountFont', size: 'accountSize', min: 24, max: 110 },
+};
+
 async function templatesPage() {
   let list = await api('/api/templates');
   let selId = list[0].id;
   let d = { ...list[0] };
   let dirty = false;
+  let selEl = 'title';
   $app.innerHTML = '';
-  const page = el('<div class="page" style="max-width:1250px"><h1>템플릿 설정</h1><p class="sub">쇼츠 제목 스타일, 하단 계정명, 배경, 자막 스타일을 템플릿으로 저장해 두고 쇼츠마다 골라 쓰세요.</p><div class="tplpage"><div><div class="tpllist" id="tl"></div><button class="btn" id="new" style="margin-top:10px;width:100%">＋ 새 템플릿</button></div><div class="box formgrid" id="form"></div><div><div class="phone static" id="ph">' + PHONE_HTML + '</div></div></div></div>');
+  const page = el(`<div class="page" style="max-width:1300px"><h1>템플릿 설정</h1>
+    <p class="sub">미리보기에서 제목·자막·계정명을 <b>끌어서 위치를 바꾸고</b>, 오른쪽에서 폰트·크기·색을 고르세요. 만든 템플릿은 쇼츠마다 골라 쓸 수 있습니다.</p>
+    <div class="tplpage"><div><div class="tpllist" id="tl"></div><button class="btn" id="new" style="margin-top:10px;width:100%">＋ 새 템플릿</button></div>
+      <div class="box formgrid" id="form"></div>
+      <div class="phonecol"><div class="phone static edit" id="ph">${PHONE_HTML}</div><div class="hint2">제목·자막·계정명을 끌어서 이동 · 가운데에 가까워지면 자동 정렬</div></div></div></div>`);
   $app.append(page);
-  const $ = (s) => page.querySelector(s);
-  $('#ph').querySelector('.vwrap').innerHTML = '<div class="sample"></div>';
+  const $ = (q) => page.querySelector(q);
+  const ph = $('#ph');
+  ph.querySelector('.vwrap').innerHTML = '<div class="sample"></div>';
 
-  const repaint = () => paintPhone($('#ph'), d, { title: ['쇼츠 제목 첫번째 줄', '쇼츠 제목 마지막 줄'], sub: '자막은 이렇게 보입니다' });
+  const repaint = () => {
+    paintPhone(ph, d, { title: ['쇼츠 제목 첫번째 줄', '쇼츠 제목 마지막 줄'], sub: '자막은 이렇게 보입니다', accountPlaceholder: '@계정명' });
+    for (const [k, m] of Object.entries(EL_META)) ph.querySelector(m.node).classList.toggle('sel', k === selEl);
+  };
+  const touch = () => { dirty = true; repaint(); };
 
   function renderList() {
     $('#tl').innerHTML = '';
@@ -604,22 +633,27 @@ async function templatesPage() {
     const f = $('#form');
     f.innerHTML = `
       <div class="two"><div class="field"><label>템플릿 이름</label><input type="text" id="name" maxlength="30" value="${esc(d.name)}"></div>
-        <div class="field"><label>계정명 (영상 하단)</label><input type="text" id="account" maxlength="40" placeholder="@내채널" value="${esc(d.account)}"></div></div>
-      <div class="field"><label>레이아웃</label><div class="seg" id="layout"><button data-k="full" class="${d.layout === 'full' ? 'on' : ''}">전체화면</button><button data-k="framed" class="${d.layout === 'framed' ? 'on' : ''}">프레임 (배경색 + 정사각 영상)</button></div></div>
-      <div class="field"><label>배경색 (프레임 레이아웃)</label><div class="colorrow"><input type="color" id="bgColor" value="${d.bgColor}"><span class="meta">${d.layout === 'framed' ? '' : '전체화면에서는 사용되지 않습니다'}</span></div></div>
-      <div class="two"><div class="field"><label>제목 첫째 줄 색</label><div class="colorrow"><input type="color" id="titleColor1" value="${d.titleColor1}"></div></div>
-        <div class="field"><label>제목 둘째 줄 색</label><div class="colorrow"><input type="color" id="titleColor2" value="${d.titleColor2}"></div></div></div>
-      <div class="field"><label>제목 크기 <span id="tsv">${d.titleSize}</span></label><input type="range" id="titleSize" min="50" max="110" value="${d.titleSize}"></div>
-      <div class="two"><div class="field"><label>계정명 색</label><div class="colorrow"><input type="color" id="accountColor" value="${d.accountColor}"></div></div>
-        <div class="field"><label>계정명 크기 <span id="asv">${d.accountSize}</span></label><input type="range" id="accountSize" min="30" max="90" value="${d.accountSize}"></div></div>
-      <div class="field"><label>자막 스타일</label><div class="seg" id="subStyle">${Object.entries(config.subStyles || {}).map(([k, v]) => `<button data-k="${k}" class="${d.subStyle === k ? 'on' : ''}">${esc(v)}</button>`).join('')}</div></div>
+        <div class="field"><label>계정명 (모든 쇼츠에 표시)</label><input type="text" id="account" maxlength="40" placeholder="@내채널" value="${esc(d.account)}"></div></div>
+      <div class="field"><label>레이아웃</label><div class="seg" id="layout"><button data-k="full" class="${d.layout === 'full' ? 'on' : ''}">전체화면</button><button data-k="framed" class="${d.layout === 'framed' ? 'on' : ''}">프레임 (배경색 + 정사각 영상)</button></div>
+        <div class="colorrow" id="bgrow" style="${d.layout === 'framed' ? '' : 'display:none'}"><input type="color" id="bgColor" value="${d.bgColor}"><span class="meta">배경색</span></div>
+        <div class="hint2">레이아웃을 바꾸면 요소 위치가 그 레이아웃의 기본값으로 돌아갑니다.</div></div>
+      <div class="field"><label>편집할 요소 (미리보기에서 눌러도 선택돼요)</label><div class="eltabs" id="eltabs">${Object.entries(EL_META).map(([k, m]) => `<button data-k="${k}" class="${k === selEl ? 'on' : ''}">${m.label}</button>`).join('')}</div></div>
+      <div id="elpanel" class="formgrid"></div>
       <div class="row" style="margin-top:6px"><button class="btn primary" id="save">저장</button><button class="btn" id="dup">복제</button><button class="btn danger" id="del" style="margin-left:auto">삭제</button></div>`;
-    const set = (k, v) => { d[k] = v; dirty = true; repaint(); };
-    for (const k of ['name', 'account']) f.querySelector('#' + k).oninput = (e) => { set(k, e.target.value); };
-    for (const k of ['bgColor', 'titleColor1', 'titleColor2', 'accountColor']) f.querySelector('#' + k).oninput = (e) => set(k, e.target.value);
-    f.querySelector('#titleSize').oninput = (e) => { f.querySelector('#tsv').textContent = e.target.value; set('titleSize', +e.target.value); };
-    f.querySelector('#accountSize').oninput = (e) => { f.querySelector('#asv').textContent = e.target.value; set('accountSize', +e.target.value); };
-    for (const k of ['layout', 'subStyle']) f.querySelector('#' + k).onclick = (e) => { const v = e.target.dataset.k; if (!v) return; set(k, v); f.querySelectorAll(`#${k} button`).forEach((b) => b.classList.toggle('on', b.dataset.k === v)); };
+    f.querySelector('#name').oninput = (e) => { d.name = e.target.value; touch(); };
+    f.querySelector('#account').oninput = (e) => { d.account = e.target.value; touch(); };
+    f.querySelector('#bgColor').oninput = (e) => { d.bgColor = e.target.value; touch(); };
+    f.querySelector('#layout').onclick = (e) => {
+      const v = e.target.dataset.k; if (!v || v === d.layout) return;
+      d.layout = v;
+      const pd = config.positionDefaults[v];
+      [d.titleX, d.titleY] = pd.title; [d.subX, d.subY] = pd.sub; [d.accountX, d.accountY] = pd.account;
+      d.accountOutline = v === 'full';
+      f.querySelectorAll('#layout button').forEach((b) => b.classList.toggle('on', b.dataset.k === v));
+      f.querySelector('#bgrow').style.display = v === 'framed' ? '' : 'none';
+      touch(); renderPanel();
+    };
+    f.querySelector('#eltabs').onclick = (e) => { const k = e.target.dataset.k; if (k) chooseEl(k); };
     f.querySelector('#save').onclick = async () => {
       try {
         const t = await api(`/api/templates/${selId}`, { method: 'PUT', body: d });
@@ -633,8 +667,83 @@ async function templatesPage() {
       if (!confirm(`"${d.name}" 템플릿을 삭제할까요? 이 템플릿을 쓰던 쇼츠는 첫 번째 템플릿으로 바뀝니다.`)) return;
       try { await api(`/api/templates/${selId}`, { method: 'DELETE' }); list = list.filter((x) => x.id !== selId); select(list[0].id); } catch (e) { toast(e.message, true); }
     };
-    repaint();
+    renderPanel(); repaint();
   }
+
+  function chooseEl(k) {
+    selEl = k;
+    page.querySelectorAll('#eltabs button').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
+    renderPanel(); repaint();
+  }
+
+  // 선택한 요소의 속성 패널
+  function renderPanel() {
+    const m = EL_META[selEl]; const box = $('#elpanel');
+    const slider = (id, label, min, max, step, val, unit = '') => `<div class="slider"><label>${label}</label><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}"><output id="${id}o">${val}${unit}</output></div>`;
+    const color = (id, label, val) => `<div class="colorrow"><input type="color" id="${id}" value="${val}"><span class="meta">${label}</span></div>`;
+    const fonts = config.fonts || [];
+    box.innerHTML = `
+      <div class="field"><label>${m.label} 폰트</label><div class="fontgrid" id="fonts">${fonts.map((f) => `<button class="fontchip ${d[m.font] === f.id ? 'on' : ''}" data-id="${f.id}" style="font-family:'jy-${f.id}'"><span>가나다 쇼츠 Abc</span><small>${esc(f.label)}</small></button>`).join('')}</div></div>
+      ${slider('size', '크기', m.min, m.max, 1, d[m.size])}
+      ${selEl === 'title' ? `<div class="two">${color('c1', '첫째 줄 색', d.titleColor1)}${color('c2', '둘째 줄 색', d.titleColor2)}</div>` : ''}
+      ${selEl === 'sub' ? `<div class="field"><label>자막 스타일</label><div class="seg" id="substyle">${Object.entries(config.subStyles || {}).map(([k, v]) => `<button data-k="${k}" class="${d.subStyle === k ? 'on' : ''}">${esc(v)}</button>`).join('')}</div></div>` : ''}
+      ${selEl === 'account' ? `<div class="two">${color('c3', '글자 색', d.accountColor)}<label class="toggle" style="gap:10px;justify-content:flex-start"><input type="checkbox" id="outline" ${d.accountOutline ? 'checked' : ''}><span class="meta">검은 외곽선</span></label></div>` : ''}
+      <div class="field"><label>위치 (미리보기에서 끌어도 돼요)</label>
+        ${slider('px', '가로', 0, 100, 0.5, Math.round(d[m.x] * 200) / 2, '%')}
+        ${slider('py', '세로', 0, 100, 0.5, Math.round(d[m.y] * 200) / 2, '%')}
+        <div class="row" style="gap:8px"><button class="btn sm" id="center">가운데 맞춤</button><button class="btn sm" id="resetpos">위치 초기화</button></div></div>`;
+    box.querySelector('#fonts').onclick = (e) => {
+      const chip = e.target.closest('.fontchip'); if (!chip) return;
+      d[m.font] = chip.dataset.id; box.querySelectorAll('.fontchip').forEach((c) => c.classList.toggle('on', c === chip)); touch();
+    };
+    box.querySelector('#size').oninput = (e) => { d[m.size] = +e.target.value; box.querySelector('#sizeo').textContent = e.target.value; touch(); };
+    box.querySelector('#c1')?.addEventListener('input', (e) => { d.titleColor1 = e.target.value; touch(); });
+    box.querySelector('#c2')?.addEventListener('input', (e) => { d.titleColor2 = e.target.value; touch(); });
+    box.querySelector('#c3')?.addEventListener('input', (e) => { d.accountColor = e.target.value; touch(); });
+    box.querySelector('#outline')?.addEventListener('change', (e) => { d.accountOutline = e.target.checked; touch(); });
+    box.querySelector('#substyle')?.addEventListener('click', (e) => {
+      const k = e.target.dataset.k; if (!k) return; d.subStyle = k; box.querySelectorAll('#substyle button').forEach((b) => b.classList.toggle('on', b.dataset.k === k)); touch();
+    });
+    box.querySelector('#px').oninput = (e) => { d[m.x] = e.target.value / 100; box.querySelector('#pxo').textContent = `${e.target.value}%`; touch(); };
+    box.querySelector('#py').oninput = (e) => { d[m.y] = e.target.value / 100; box.querySelector('#pyo').textContent = `${e.target.value}%`; touch(); };
+    box.querySelector('#center').onclick = () => { d[m.x] = 0.5; syncPos(); touch(); };
+    box.querySelector('#resetpos').onclick = () => {
+      const pd = config.positionDefaults[d.layout][selEl];
+      [d[m.x], d[m.y]] = pd; syncPos(); touch();
+    };
+  }
+  function syncPos() {
+    const m = EL_META[selEl]; const box = $('#elpanel');
+    const x = Math.round(d[m.x] * 200) / 2; const y = Math.round(d[m.y] * 200) / 2;
+    box.querySelector('#px').value = x; box.querySelector('#pxo').textContent = `${x}%`;
+    box.querySelector('#py').value = y; box.querySelector('#pyo').textContent = `${y}%`;
+  }
+
+  // 미리보기에서 요소 드래그
+  let drag = null;
+  ph.addEventListener('pointerdown', (e) => {
+    const node = e.target.closest('.ov'); if (!node) return;
+    const key = Object.keys(EL_META).find((k) => node.matches(EL_META[k].node)); if (!key) return;
+    if (key !== selEl) chooseEl(key);
+    const m = EL_META[key]; const r = ph.getBoundingClientRect();
+    drag = { m, r, px: (e.clientX - r.left) / r.width, py: (e.clientY - r.top) / r.height, x: d[m.x], y: d[m.y] };
+    ph.setPointerCapture(e.pointerId);
+  });
+  ph.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const { m, r } = drag;
+    let nx = drag.x + ((e.clientX - r.left) / r.width - drag.px);
+    let ny = drag.y + ((e.clientY - r.top) / r.height - drag.py);
+    nx = Math.min(0.98, Math.max(0.02, nx)); ny = Math.min(0.98, Math.max(0.02, ny));
+    const sx = Math.abs(nx - 0.5) < 0.015; const sy = Math.abs(ny - 0.5) < 0.012;
+    if (sx) nx = 0.5; if (sy) ny = 0.5;
+    ph.querySelector('.gv').style.display = sx ? 'block' : 'none';
+    ph.querySelector('.gh').style.display = sy ? 'block' : 'none';
+    d[m.x] = Math.round(nx * 1000) / 1000; d[m.y] = Math.round(ny * 1000) / 1000;
+    syncPos(); touch();
+  });
+  const endDrag = () => { drag = null; ph.querySelector('.gv').style.display = 'none'; ph.querySelector('.gh').style.display = 'none'; };
+  ph.addEventListener('pointerup', endDrag); ph.addEventListener('pointercancel', endDrag);
 
   $('#new').onclick = async () => {
     if (dirty && !confirm('저장하지 않은 변경 사항이 사라집니다. 계속할까요?')) return;

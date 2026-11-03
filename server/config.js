@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
 export const FONTS_DIR = process.env.FONTS_DIR || path.join(ROOT, 'fonts');
-export const FONT_NAME = process.env.FONT_NAME || 'Pretendard';
 export const PORT = Number(process.env.PORT || 3000);
 
 export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 4096) * 1024 * 1024;

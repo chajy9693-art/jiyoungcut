@@ -3,7 +3,8 @@ import multer from 'multer';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PORT, ROOT, MAX_UPLOAD_BYTES, MAX_DURATION_SEC, MOCK_AI } from './config.js';
+import { PORT, ROOT, FONTS_DIR, MAX_UPLOAD_BYTES, MAX_DURATION_SEC, MOCK_AI } from './config.js';
+import { availableFonts, fontsCss } from './fonts.js';
 import * as store from './store.js';
 import * as ff from './ffmpeg.js';
 import * as ai from './ai.js';
@@ -13,6 +14,8 @@ import * as tpls from './templates.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+app.use('/fonts', express.static(FONTS_DIR, { maxAge: '7d' }));
+app.get('/fonts.css', (req, res) => res.type('text/css').send(fontsCss()));
 app.use(express.static(path.join(ROOT, 'public')));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -32,7 +35,7 @@ function getClip(p, cid) {
 // ───────────────────────── 설정 / 목록 ─────────────────────────
 
 app.get('/api/config', (req, res) => {
-  res.json({ ...ai.capabilities(), subStyles: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
+  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label }) => ({ id, label })), positionDefaults: tpls.POSITION_DEFAULTS, subStyles: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
 });
 
 // ───────────────────────── 템플릿 ─────────────────────────

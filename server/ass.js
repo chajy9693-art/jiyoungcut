@@ -1,4 +1,5 @@
-import { OUT_W, OUT_H, FONT_NAME } from './config.js';
+import { OUT_W, OUT_H } from './config.js';
+import { fontById } from './fonts.js';
 import { splitTitle } from './subtitles.js';
 
 // 자막 스타일. ASS 색상은 &HAABBGGRR
@@ -53,33 +54,36 @@ const esc = (t) => String(t).replace(/\\/g, '＼').replace(/[{}]/g, '').replace(
  */
 export function buildAss({ clip, subs, tpl }) {
   const sub = SUB_TEMPLATES[tpl.subStyle] || SUB_TEMPLATES.basic;
-  const framed = tpl.layout === 'framed';
+  const fTitle = fontById(tpl.titleFont);
+  const fSub = fontById(tpl.subFont);
+  const fAcc = fontById(tpl.accountFont);
   const segs = segmentsOf(clip);
   const dur = totalDuration(segs);
+  // 요소 중심 좌표 (캔버스 비율 → 픽셀)
+  const at = (x, y) => `{\\an5\\pos(${Math.round(x * OUT_W)},${Math.round(y * OUT_H)})}`;
   const lines = [];
   lines.push('[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${OUT_W}`, `PlayResY: ${OUT_H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '');
   lines.push('[V4+ Styles]');
   lines.push('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding');
-  lines.push(`Style: Sub,${FONT_NAME},68,${sub.primary},&H000000FF,${sub.outline},&H00000000,-1,0,0,0,100,100,0,0,${sub.border},${sub.outlineSize},0,2,70,70,${framed ? 450 : 430},1`);
-  lines.push(`Style: Title,${FONT_NAME},${tpl.titleSize},${hexToAss(tpl.titleColor1)},&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,8,0,8,60,60,190,1`);
-  lines.push(`Style: Account,${FONT_NAME},${tpl.accountSize},${hexToAss(tpl.accountColor)},&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,${framed ? 0 : 5},0,5,60,60,0,1`, '');
+  lines.push(`Style: Sub,${fSub.family},${tpl.subSize},${sub.primary},&H000000FF,${sub.outline},&H00000000,${fSub.bold},0,0,0,100,100,0,0,${sub.border},${sub.outlineSize},0,5,70,70,0,1`);
+  lines.push(`Style: Title,${fTitle.family},${tpl.titleSize},${hexToAss(tpl.titleColor1)},&H000000FF,&H00000000,&H00000000,${fTitle.bold},0,0,0,100,100,0,0,1,8,0,5,60,60,0,1`);
+  lines.push(`Style: Account,${fAcc.family},${tpl.accountSize},${hexToAss(tpl.accountColor)},&H000000FF,&H00000000,&H00000000,${fAcc.bold},0,0,0,100,100,0,0,1,${tpl.accountOutline ? 5 : 0},0,5,60,60,0,1`, '');
   lines.push('[Events]', 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
 
   if (clip.titleOn !== false) {
     const t = splitTitle(clip.title);
     if (t.length) {
       const text = t.length === 1 ? esc(t[0]) : `${esc(t[0])}\\N{\\c${hexToAss(tpl.titleColor2)}&}${esc(t[1])}`;
-      const pos = framed ? `{\\an5\\pos(${OUT_W / 2},${FRAME.top / 2})}` : '';
-      lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Title,,0,0,0,,${pos}${text}`);
+      lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Title,,0,0,0,,${at(tpl.titleX, tpl.titleY)}${text}`);
     }
   }
   if (tpl.account) {
-    const y = framed ? FRAME.top + FRAME.size + FRAME.top / 2 : OUT_H - 120;
-    lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Account,,0,0,0,,{\\an5\\pos(${OUT_W / 2},${y})}${esc(tpl.account)}`);
+    lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Account,,0,0,0,,${at(tpl.accountX, tpl.accountY)}${esc(tpl.account)}`);
   }
   if (clip.subtitleOn !== false) {
+    const p = at(tpl.subX, tpl.subY);
     for (const s of timelineSubs(segs, subs)) {
-      lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,${esc(s.text)}`);
+      lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,${p}${esc(s.text)}`);
     }
   }
   return lines.join('\n') + '\n';

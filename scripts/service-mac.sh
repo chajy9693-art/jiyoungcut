@@ -11,6 +11,15 @@ LOG="$HOME/Library/Logs/jiyoungcut.log"
 DOMAIN="gui/$(id -u)"
 PORT="${PORT:-3000}"
 
+# 서비스를 내리고 완전히 내려갈 때까지 대기
+stop_service() {
+  launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+}
+
 make_plist() {
   local node_bin
   node_bin="$(command -v node || true)"
@@ -54,16 +63,26 @@ case "${1:-}" in
     [ "$(uname)" = "Darwin" ] || { echo "macOS 전용 스크립트입니다." >&2; exit 1; }
     command -v ffmpeg >/dev/null 2>&1 || echo "⚠ ffmpeg를 찾지 못했습니다. 설치 후 다시 실행하세요: brew install homebrew-ffmpeg/ffmpeg/ffmpeg"
     mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-    launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+    stop_service
     make_plist > "$PLIST"
-    launchctl bootstrap "$DOMAIN" "$PLIST"
+    # 직전에 내린 서비스가 아직 정리 중이면 bootstrap이 "Input/output error"로 실패하므로 재시도한다
+    ok=""
+    for i in 1 2 3 4 5 6; do
+      if launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then ok=1; break; fi
+      sleep 2
+    done
+    if [ -z "$ok" ]; then
+      echo "❌ 등록에 실패했습니다. 아래 오류를 알려 주세요:" >&2
+      launchctl bootstrap "$DOMAIN" "$PLIST" >&2 || true
+      exit 1
+    fi
     launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
     echo "✅ 등록 완료: http://localhost:$PORT"
     echo "   터미널을 닫아도 계속 실행되고, 맥에 로그인하면 자동으로 시작됩니다."
     echo "   로그 보기: npm run service:logs   /   해제: npm run service:uninstall"
     ;;
   uninstall)
-    launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+    stop_service
     rm -f "$PLIST"
     echo "🛑 서비스를 해제했습니다. (프로젝트/영상 데이터는 그대로 남아 있습니다)"
     ;;

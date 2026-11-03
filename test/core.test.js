@@ -23,8 +23,8 @@ test('제목 두 줄 분할', () => {
 
 test('ASS 시간 및 구간 상대화', () => {
   assert.equal(assTime(3661.5), '1:01:01.50');
-  const ass = buildAss({ clip: { start: 100, end: 110, title: '제목' }, tpl: { ...DEFAULTS, subStyle: 'box', account: '@jiyoung' }, subs: [{ start: 98, end: 102, text: '안녕{}' }, { start: 200, end: 201, text: '밖' }] });
-  assert.match(ass, /Dialogue: 1,0:00:00.00,0:00:02.00,Sub,,0,0,0,,안녕/);
+  const ass = buildAss({ clip: { start: 100, end: 110, title: '제목' }, tpl: sanitize({ subStyle: 'box', account: '@jiyoung' }), subs: [{ start: 98, end: 102, text: '안녕{}' }, { start: 200, end: 201, text: '밖' }] });
+  assert.match(ass, /Dialogue: 1,0:00:00.00,0:00:02.00,Sub,,0,0,0,,\{\\an5\\pos\(540,1450\)\}안녕/);
   assert.ok(!ass.includes('밖'));
   assert.match(ass, /Account,,0,0,0,,\{\\an5\\pos\(540,1800\)\}@jiyoung/);
 });
@@ -56,14 +56,14 @@ test('API 키 없는 대체 로직', () => {
 test('framed 레이아웃: 정사각 크롭 + 배경색 패딩, 계정명은 하단 바 중앙', () => {
   const f = buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 0.5, layout: 'framed', bgColor: '#1f6f6a' });
   assert.match(f, /^crop=1080:1080:420:0,scale=1080:1080.*pad=1080:1920:0:420:color=0x1f6f6a/);
-  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl: { ...DEFAULTS, layout: 'framed', account: '@a' } });
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl: sanitize({ layout: 'framed', account: '@a' }) });
   assert.match(ass, /pos\(540,1710\)\}@a/);
 });
 
 test('템플릿 검증: 잘못된 값은 기본값으로 보정', () => {
   const t = sanitize({ bgColor: 'red', titleSize: 9999, layout: 'x', subStyle: 'nope', account: '@a\nb' });
   assert.equal(t.bgColor, DEFAULTS.bgColor);
-  assert.equal(t.titleSize, 110);
+  assert.equal(t.titleSize, 130);
   assert.equal(t.layout, 'full');
   assert.equal(t.subStyle, 'basic');
   assert.equal(t.account, '@a b');
@@ -103,8 +103,8 @@ test('이어 붙인 타임라인으로 자막 시간 변환', () => {
   const segs = [{ start: 200, end: 205 }, { start: 10, end: 20 }];
   const out = timelineSubs(segs, [{ start: 10, end: 12, text: '본론' }, { start: 201, end: 203, text: '후킹' }, { start: 100, end: 101, text: '제외' }]);
   assert.deepEqual(out.map((s) => [s.text, s.start, s.end]), [['후킹', 1, 3], ['본론', 5, 7]]);
-  const ass = buildAss({ clip: { segments: segs, title: '' }, tpl: DEFAULTS, subs: [{ start: 10, end: 12, text: '본론' }] });
-  assert.match(ass, /Dialogue: 1,0:00:05.00,0:00:07.00,Sub,,0,0,0,,본론/);
+  const ass = buildAss({ clip: { segments: segs, title: '' }, tpl: sanitize({}), subs: [{ start: 10, end: 12, text: '본론' }] });
+  assert.match(ass, /Dialogue: 1,0:00:05.00,0:00:07.00,Sub,,0,0,0,,\{[^}]*\}본론/);
 });
 
 test('whisper.cpp JSON 변환: 오프셋 적용, 소리 설명/빈 구간 제외', () => {
@@ -125,4 +125,30 @@ test('음성 인식 방식 선택', () => {
   assert.equal(pickSttProvider({ explicit: 'local', openaiKey: 'k', localOk: true }), 'local');
   assert.equal(pickSttProvider({ explicit: 'local', openaiKey: 'k', localOk: false }), null);
   assert.equal(pickSttProvider({ explicit: '', openaiKey: '', localOk: false }), null);
+});
+
+test('템플릿: 폰트·위치 기본값은 레이아웃 기준, 범위/폰트 id 검증', () => {
+  const full = sanitize({});
+  assert.deepEqual([full.titleX, full.titleY, full.accountY], [0.5, 0.152, 0.9375]);
+  const framed = sanitize({ layout: 'framed' });
+  assert.equal(framed.accountY, 0.890625);
+  assert.equal(framed.accountOutline, false);
+  const t = sanitize({ titleX: 5, titleY: -2, titleFont: 'nope', subFont: 'jua', subSize: 10, accountOutline: true });
+  assert.equal(t.titleX, 1);
+  assert.equal(t.titleY, 0);
+  assert.equal(t.titleFont, 'pretendard-bold');
+  assert.equal(t.subFont, 'jua');
+  assert.equal(t.subSize, 36);
+  assert.equal(t.accountOutline, true);
+  // 기존 템플릿 수정 시 지정하지 않은 값은 유지
+  assert.equal(sanitize({ subSize: 90 }, t).titleX, 1);
+});
+
+test('ASS: 요소별 폰트와 위치가 반영된다', () => {
+  const tpl = sanitize({ account: '@jy', titleFont: 'black-han-sans', subFont: 'nanum-myeongjo', accountFont: 'jua', titleX: 0.25, titleY: 0.3, subSize: 80, accountOutline: false });
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [{ start: 0, end: 2, text: '자막' }], tpl });
+  assert.match(ass, /Style: Title,Black Han Sans,84,.*,0,0,0,0,100,100,0,0,1,8,0,5,/);
+  assert.match(ass, /Style: Sub,NanumMyeongjoExtraBold,80,/);
+  assert.match(ass, /Style: Account,Jua,52,.*,1,0,0,5,/);
+  assert.match(ass, /Title,,0,0,0,,\{\\an5\\pos\(270,576\)\}제목/);
 });

@@ -219,3 +219,24 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 22px; align-items: center; }
 .tgrid .toggle { justify-content: space-between; gap: 10px; }
 .tl .cut { position: absolute; top: 4px; bottom: 4px; border-radius: 3px; background: repeating-linear-gradient(135deg, rgba(248,113,113,.55) 0 4px, rgba(248,113,113,.15) 4px 8px); border: 1px solid rgba(248,113,113,.7); z-index: 1; pointer-events: none; }
+
+/* AI 편집 노트 / 소주제 */
+.ainote { background: linear-gradient(180deg, #171a33, #12131f); border: 1px solid #2c3160; border-radius: 14px; padding: 12px 14px !important; margin-bottom: 4px; }
+.ainote h4 { color: #c7d0ff !important; }
+.topicchip { background: #1d2250; border: 1px solid #343b8a; border-radius: 10px; padding: 6px 10px; font-size: 13px; line-height: 1.4; }
+.topicchip b { color: #a5b4fc; margin-right: 4px; }
+.topicchip small { color: var(--dim); margin-left: 4px; }
+.nblock { display: grid; gap: 2px; margin-top: 8px; }
+.nblock > b { font-size: 12px; color: #a5b4fc; }
+.nblock p { margin: 0; font-size: 13px; line-height: 1.55; white-space: pre-wrap; color: var(--text); }
+.nblock.fb > b { color: #fbbf24; }
+.nblock.stat p { color: var(--dim); font-size: 12px; }
+.notebody { display: grid; gap: 4px; }
+.notebody .btn { margin-top: 8px; }
+.segrow .ex .why { font-style: normal; color: #a5b4fc; }
+.topiclist { display: grid; gap: 6px; }
+.topic { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; gap: 2px; opacity: .6; }
+.topic b { font-size: 12px; font-weight: 600; line-height: 1.4; }
+.topic small { color: var(--dim); font-size: 11px; }
+.topic.used { opacity: 1; cursor: pointer; border-color: #343b8a; }
+.topic.sel { border-color: var(--accent); background: #181a2c; }

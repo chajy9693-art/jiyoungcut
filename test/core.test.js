@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chunkSegments, splitTitle } from '../server/subtitles.js';
 import { buildAss, assTime, timelineSubs, withHangulFallback, assColor } from '../server/ass.js';
 import { fontById, FONT_CATALOG } from '../server/fonts.js';
-import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider } from '../server/ai.js';
+import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider, normalizeTopics, pickTopics, mockTopics, mockHighlights } from '../server/ai.js';
 import { parseWhisperCppJson } from '../server/stt-local.js';
 import { buildVideoFilter, buildRenderGraph } from '../server/ffmpeg.js';
 import { effectiveSegments, tightenSummary, sanitizeTighten } from '../public/cuts.js';
@@ -313,4 +313,43 @@ test('렌더 그래프: 일부를 걷어낸 구간은 select로, 그대로인 �
   // 타임라인: 0~5(구간0) 5~9(0~4) 9~13(5~9) 13~22(11~20). 원본 8~12초 자막은 8~9→12~13, 11~12→13~14로 나뉜다
   assert.match(ass, /Dialogue: 1,0:00:12.00,0:00:13.00,Sub,,0,0,0,,[^\n]*걸침/);
   assert.match(ass, /Dialogue: 1,0:00:13.00,0:00:14.00,Sub,,0,0,0,,[^\n]*걸침/);
+});
+
+test('소주제: 발화 경계로 맞추고 겹침·너무 짧은 구간 제거, 가치 높은 순으로 선택', () => {
+  const transcript = Array.from({ length: 60 }, (_, i) => ({ start: i * 5, end: i * 5 + 4.5, text: 'x' }));
+  const raw = [
+    { title: '두 번째 주제', summary: '', start: 100.8, end: 200.2, score: 60 },
+    { title: '첫 주제', summary: 's', start: 1, end: 99, score: 90 },
+    { title: '앞과 겹치는 주제', summary: '', start: 150, end: 160, score: 80 },
+    { title: '너무 짧음', summary: '', start: 250, end: 254, score: 99 },
+    { title: '', summary: '', start: 260, end: 290, score: 50 },
+  ];
+  const topics = normalizeTopics(raw, { transcript, duration: 300 });
+  assert.deepEqual(topics.map((t) => [t.id, t.title, t.start, t.end]), [[1, '첫 주제', 0, 99.5 - 0.0], [2, '두 번째 주제', 100, 199.5]].map((x) => x));
+  assert.ok(topics.every((t, i) => i === 0 || t.start >= topics[i - 1].end)); // 겹치지 않음
+  assert.deepEqual(pickTopics(topics, { count: 1, minLen: 30 }).map((t) => t.id), [1]); // 점수 높은 순
+  assert.deepEqual(pickTopics(topics, { count: 5, minLen: 30 }).map((t) => t.id), [1, 2]); // 시간 순서로 반환
+});
+
+test('소주제별 쇼츠: 소주제 범위 밖 구간은 제거, 소주제 하나에 쇼츠 하나, 편집 노트 보존', () => {
+  const transcript = Array.from({ length: 80 }, (_, i) => ({ start: i * 5, end: i * 5 + 4.5, text: 'x' }));
+  const topics = [{ id: 1, title: 'A', start: 0, end: 100, summary: '' }, { id: 2, title: 'B', start: 100, end: 200, summary: '' }];
+  const mk = (topic_id, segments, score) => ({ topic_id, segments, title: 't', score, rationale: ` 이유${topic_id} `, feedback: '피드백' });
+  const out = normalizeClips([
+    mk(1, [{ start: 150, end: 160, role: 'hook', note: '다른 소주제의 장면' }, { start: 10, end: 45, role: 'body', note: '본론 설명' }], 90), // 150~160은 소주제 밖 → 제거
+    mk(1, [{ start: 50, end: 80, role: 'body', note: '' }], 80), // 같은 소주제 두 번째 쇼츠 → 제외
+    mk(2, [{ start: 120, end: 150, role: 'body', note: '' }], 70),
+    mk(9, [{ start: 0, end: 30, role: 'body', note: '' }], 99), // 없는 소주제 → 제외
+  ], { transcript, duration: 400, minLen: 30, maxLen: 60, topics });
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((c) => c.topicId), [1, 2]);
+  assert.deepEqual(out[0].segments.map((g) => [g.start, g.end, g.role, g.note]), [[10, 44.5, 'body', '본론 설명']]);
+  assert.deepEqual([out[0].topic, out[0].topicRange], ['A', [0, 100]]);
+  assert.equal(out[0].rationale, '이유1');
+  assert.ok(out.every((c) => c.segments.every((g) => g.start >= c.topicRange[0] && g.end <= c.topicRange[1])));
+  // 데모 모드도 같은 규칙을 만족한다
+  const mt = mockTopics(120, 3);
+  const mc = normalizeClips(mockHighlights({ topics: mt, minLen: 30, maxLen: 60 }), { transcript: [], duration: 120, minLen: 30, maxLen: 60, topics: mt });
+  assert.equal(mc.length, mt.length);
+  assert.ok(mc.every((c) => c.rationale && c.feedback && c.segments.length === 2 && c.segments[0].note));
 });

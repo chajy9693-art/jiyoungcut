@@ -240,7 +240,8 @@ function setupPage(p, templates) {
       <div class="field"><label>편집 방식</label><select id="mode"><option value="context" selected>맥락 편집 (후킹·군더더기 제거)</option><option value="single">단순 구간 (연속 한 구간)</option></select></div>
       <div class="field"><label>템플릿</label><select id="tplsel">${templates.map((t) => `<option value="${t.id}">${esc(t.name)}${t.account ? ' · ' + esc(t.account) : ''}</option>`).join('')}</select></div>
       <div class="field"><label>영상 언어</label><select id="lang"><option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option><option value="auto">자동 감지</option></select></div>
-      <button class="btn primary big" id="go" style="margin-left:auto">AI로 쇼츠 찾기 →</button></div></div></div>`);
+      <button class="btn primary big" id="go" style="margin-left:auto">AI로 쇼츠 찾기 →</button></div>
+      <div class="meta" style="margin-top:12px">AI가 영상 전체 맥락을 먼저 읽어 <b>소주제</b>로 나눈 뒤, 소주제마다 쇼츠 1개를 컷편집합니다. 쇼츠마다 "왜 이렇게 편집했는지"와 피드백이 함께 만들어져요.</div></div></div>`);
   $app.append(page);
   page.querySelector('#go').onclick = async (e) => {
     e.target.disabled = true;
@@ -268,7 +269,7 @@ function analyzingPage(p) {
 // ───────────────────────── 에디터 ─────────────────────────
 
 function editorPage(p, templates) {
-  const S = { p, sel: p.clips[0].id, seg: 0, cur: 0, t: 0, playing: false, styEl: 'title' };
+  const S = { p, sel: p.clips[0].id, seg: 0, cur: 0, t: 0, playing: false, styEl: 'title', noteOpen: true };
   preloadFonts(templates);
   const clip = () => S.p.clips.find((c) => c.id === S.sel);
   const src = p.video.proxy ? `/media/${p.id}/proxy` : `/media/${p.id}/source`;
@@ -296,6 +297,7 @@ function editorPage(p, templates) {
   const root = el(`<div class="editor">
     <div class="col left"><a class="back" href="#/">← 프로젝트</a><h3>AI 추천 쇼츠 <span class="meta" style="display:inline">(${p.clips.length})</span></h3>
       <div class="cliplist" id="list"></div>
+      <div id="topics"></div>
       <div style="display:grid;gap:8px;margin-top:14px"><button class="btn" id="addclip">＋ 현재 위치에서 새 쇼츠 추가</button><button class="btn" id="reanalyze">다시 분석</button></div></div>
     <div class="col center">
       <div class="topbar"><span class="name">${esc(p.name)}</span></div>
@@ -348,6 +350,7 @@ function editorPage(p, templates) {
     if (c.render?.status === 'done') c.render.stale = true;
     pending.set(c.id, { ...(pending.get(c.id) || {}), ...patch });
     renderList(); // '수정됨' 표시는 저장을 기다리지 않고 바로
+    refreshNoteStat();
     flushClip();
   }
 
@@ -363,7 +366,19 @@ function editorPage(p, templates) {
       box.append(it);
     });
   }
-  function select(id) { S.sel = id; S.seg = 0; S.cur = 0; renderList(); renderRight(); computeWin(); renderAllCenter(); seek(eff(clip())[0].start); updatePreview(); }
+  // 영상 전체를 나눈 소주제 목록 (쇼츠가 만들어진 소주제는 눌러서 바로 이동)
+  function renderTopics() {
+    const box = $('#topics'); const list = S.p.topics || [];
+    if (!list.length) { box.innerHTML = ''; return; }
+    box.innerHTML = `<h3 style="margin-top:18px">영상 소주제 <span class="meta" style="display:inline">(${list.length})</span></h3><div class="topiclist"></div>`;
+    for (const t of list) {
+      const clipOf = S.p.clips.find((c) => c.topicId === t.id);
+      const it = el(`<div class="topic ${clipOf ? 'used' : ''} ${clipOf && clipOf.id === S.sel ? 'sel' : ''}"><b>${t.id}. ${esc(t.title)}</b><small>${fmt(t.start)}–${fmt(t.end)} · 가치 ${t.score}${clipOf ? ' · 쇼츠 만듦' : ''}</small></div>`);
+      if (clipOf) it.onclick = () => select(clipOf.id);
+      box.querySelector('.topiclist').append(it);
+    }
+  }
+  function select(id) { S.sel = id; renderTopics(); S.seg = 0; S.cur = 0; renderList(); renderRight(); computeWin(); renderAllCenter(); seek(eff(clip())[0].start); updatePreview(); }
   function renderAllCenter() { renderTimeline(); renderSegs(); renderTighten(); }
 
   // ── 미리보기 ──
@@ -533,7 +548,7 @@ function editorPage(p, templates) {
       c.tighten = { silence: false, minSilence: TIGHTEN_DEFAULTS.minSilence, pad: TIGHTEN_DEFAULTS.pad, filler: false, ...(c.tighten || {}), ...patch };
       patchClip({ tighten: c.tighten });
       S.cur = Math.min(S.cur, eff(c).length - 1);
-      summary(); renderTimeline(); renderSegs(); renderSubRows(); renderList(); updatePreview();
+      summary(); renderTimeline(); renderSegs(); renderSubRows(); renderList(); updatePreview(); refreshNoteStat();
     };
     box.querySelector('#tSil').onchange = (e) => set({ silence: e.target.checked });
     box.querySelector('#tFil').onchange = (e) => set({ filler: e.target.checked });
@@ -551,7 +566,7 @@ function editorPage(p, templates) {
         <span class="no">${i + 1}</span>
         <select class="role ${g.role || 'body'}">${Object.entries(ROLE).map(([k, v]) => `<option value="${k}" ${(g.role || 'body') === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <span class="rng">${fmtP(g.start)}–${fmtP(g.end)} <em>${(g.end - g.start).toFixed(1)}초</em></span>
-        <span class="ex">${esc(excerpt(g))}</span>
+        <span class="ex" title="${esc(excerpt(g))}">${g.note ? `<em class="why">${esc(g.note)}</em>` : esc(excerpt(g))}</span>
         <button class="x" data-a="up" title="위로" ${i === 0 ? 'disabled' : ''}>▲</button><button class="x" data-a="down" title="아래로" ${i === n - 1 ? 'disabled' : ''}>▼</button><button class="x" data-a="del" title="삭제" ${n === 1 ? 'disabled' : ''}>✕</button></div>`);
       row.onclick = (e) => {
         const a = e.target.dataset?.a;
@@ -598,10 +613,41 @@ function editorPage(p, templates) {
     set('zoom', Math.round((c.zoom || 1) * 100)); set('cx', Math.round(c.cropX * 100)); set('cy2', Math.round((c.cropY ?? 0.5) * 100));
   }
 
+  // ── AI 편집 노트: 왜 이렇게 컷편집했는지 + 의견·피드백 (제목 입력 바로 위) ──
+  function editStats(c) {
+    const E = eff(c); const hook = c.segments.filter((g) => g.role === 'hook');
+    const before = c.segments.reduce((n, g) => n + g.end - g.start, 0); const after = E.reduce((n, g) => n + g.end - g.start, 0);
+    const parts = [`구간 ${c.segments.length}개를 이어 붙여 총 ${after.toFixed(1)}초`];
+    parts.push(hook.length ? `후킹 구간 있음(${hook.reduce((n, g) => n + g.end - g.start, 0).toFixed(1)}초)` : '후킹 구간 없음');
+    if (before - after > 0.05) parts.push(`무음·군말 제거로 ${(before - after).toFixed(1)}초 단축`);
+    return parts.join(' · ');
+  }
+  function renderNote() {
+    const c = clip(); const box = root.querySelector('#ainote'); if (!box) return;
+    const has = c.rationale || c.feedback;
+    box.innerHTML = `<h4>AI 편집 노트 <button class="btn sm" id="noteToggle">${S.noteOpen ? '접기' : '펼치기'}</button></h4>
+      <div class="notebody" ${S.noteOpen ? '' : 'hidden'}>
+        ${c.topic ? `<div class="topicchip"><b>소주제</b> ${esc(c.topic)}${c.topicRange ? ` <small>${fmt(c.topicRange[0])}–${fmt(c.topicRange[1])}</small>` : ''}</div>` : ''}
+        ${c.rationale ? `<div class="nblock"><b>왜 이렇게 컷편집했나</b><p>${esc(c.rationale)}</p></div>` : ''}
+        ${c.feedback ? `<div class="nblock fb"><b>의견·피드백</b><p>${esc(c.feedback)}</p></div>` : ''}
+        ${has ? '' : '<div class="meta">이 쇼츠에는 AI 편집 노트가 없어요. 아래 버튼으로 현재 편집을 보고 의견을 받아볼 수 있어요.</div>'}
+        <div class="nblock stat"><b>현재 편집 요약</b><p id="nstat">${esc(editStats(c))}</p></div>
+        <button class="btn sm" id="renote">현재 편집 기준으로 피드백 다시 받기</button>
+      </div>`;
+    box.querySelector('#noteToggle').onclick = () => { S.noteOpen = !S.noteOpen; renderNote(); };
+    box.querySelector('#renote').onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = '피드백 작성 중…';
+      try { const n = await api(`/api/projects/${p.id}/clips/${c.id}/note`, { method: 'POST' }); Object.assign(c, n); toast('편집 노트를 새로 썼어요'); } catch (err) { toast(err.message, true); }
+      renderNote();
+    };
+  }
+  const refreshNoteStat = () => { const n = root.querySelector('#nstat'); if (n) n.textContent = editStats(clip()); };
+
   function renderRight() {
     const c = clip(); const eff = effTpl(c); const fr = resolveFrame(eff, c);
     const r = $('#right');
     r.innerHTML = `
+      <div class="sect ainote" id="ainote"></div>
       <div class="sect"><h4>제목</h4>
         <div class="field"><textarea id="title" rows="2" placeholder="쇼츠 제목 (줄바꿈으로 2줄)">${esc(c.title)}</textarea></div>
         <label class="toggle"><span>제목 표시</span><input type="checkbox" id="titleOn" ${c.titleOn ? 'checked' : ''}></label></div>
@@ -629,6 +675,7 @@ function editorPage(p, templates) {
       <div class="sect" id="renderbox"></div>
       <div class="sect"><button class="btn danger" id="del">이 쇼츠 삭제</button></div>`;
     const q = (s) => r.querySelector(s);
+    renderNote();
     q('#title').oninput = (e) => { patchClip({ title: e.target.value }); updatePreview(); };
     q('#titleOn').onchange = (e) => { patchClip({ titleOn: e.target.checked }); updatePreview(); };
     q('#subOn').onchange = (e) => { patchClip({ subtitleOn: e.target.checked }); updatePreview(); };
@@ -774,7 +821,7 @@ function editorPage(p, templates) {
   };
 
   cleanup = () => { S.playing = false; vid.pause(); };
-  renderList(); renderRight(); computeWin(); renderAllCenter();
+  renderList(); renderTopics(); renderRight(); computeWin(); renderAllCenter();
   vid.addEventListener('loadedmetadata', () => { seek(eff(clip())[0].start); updatePreview(); }, { once: true });
   updatePreview(); schedulePoll();
 }

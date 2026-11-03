@@ -4,7 +4,7 @@ import path from 'node:path';
 import { OUT_W, OUT_H, FONTS_DIR } from './config.js';
 import { FRAME } from './ass.js';
 
-function run(cmd, args, { cwd, onStdoutLine } = {}) {
+export function run(cmd, args, { cwd, onStdoutLine } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -145,4 +145,9 @@ export async function renderClip({ src, segments, srcW, srcH, cropX, layout, bgC
       if (m && onProgress) onProgress(Math.min(0.99, Number(m[1]) / 1e6 / total));
     },
   });
+}
+
+/** whisper.cpp 입력용 16kHz mono WAV */
+export async function toWav16k(src, dest) {
+  await run('ffmpeg', ['-y', '-v', 'error', '-i', src, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', dest]);
 }

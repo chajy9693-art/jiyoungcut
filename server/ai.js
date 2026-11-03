@@ -1,20 +1,40 @@
 import fs from 'node:fs';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { OPENAI_API_KEY, ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL, MOCK_AI } from './config.js';
+import { OPENAI_API_KEY, ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL, MOCK_AI, STT_PROVIDER } from './config.js';
+import { localAvailable, transcribeLocal } from './stt-local.js';
 
-export const capabilities = () => ({
-  mock: MOCK_AI,
-  transcription: MOCK_AI || !!OPENAI_API_KEY,
-  highlights: MOCK_AI || !!ANTHROPIC_API_KEY,
-  highlightsFallback: !MOCK_AI && !ANTHROPIC_API_KEY,
-});
+/** 음성 인식 방식 결정: 명시 설정 > OpenAI 키 > 설치된 로컬 whisper.cpp */
+export function pickSttProvider({ explicit = STT_PROVIDER, openaiKey = OPENAI_API_KEY, localOk = localAvailable() } = {}) {
+  if (explicit === 'openai') return openaiKey ? 'openai' : null;
+  if (explicit === 'local') return localOk ? 'local' : null;
+  if (openaiKey) return 'openai';
+  if (localOk) return 'local';
+  return null;
+}
+
+export const capabilities = () => {
+  const stt = pickSttProvider();
+  return {
+    mock: MOCK_AI,
+    sttProvider: MOCK_AI ? 'mock' : stt,
+    transcription: MOCK_AI || !!stt,
+    highlights: MOCK_AI || !!ANTHROPIC_API_KEY,
+    highlightsFallback: !MOCK_AI && !ANTHROPIC_API_KEY,
+  };
+};
 
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
 // ───────────────────────── 음성 인식 (STT) ─────────────────────────
 
-export async function transcribeChunks(chunks, { language, onProgress }) {
+export async function transcribeChunks(chunks, opts) {
+  const provider = pickSttProvider();
+  if (provider === 'local') return transcribeLocal(chunks, opts);
+  return transcribeOpenAI(chunks, opts);
+}
+
+async function transcribeOpenAI(chunks, { language, onProgress }) {
   if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.');
   const client = new OpenAI({ apiKey: OPENAI_API_KEY });
   const results = new Array(chunks.length);

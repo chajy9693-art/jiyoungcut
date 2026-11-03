@@ -85,7 +85,7 @@ async function init() {
   const dot = (cls) => `<span class="dot ${cls}"></span>`;
   document.getElementById('ai-status').innerHTML = config.mock
     ? `<span class="chip">${dot('mid')}데모 모드 (MOCK_AI)</span>`
-    : `<span class="chip">${dot(config.transcription ? 'on' : '')}음성 인식 (OpenAI)</span>
+    : `<span class="chip">${dot(config.transcription ? 'on' : '')}음성 인식 (${config.sttProvider === 'local' ? '내 맥 Whisper' : config.sttProvider === 'openai' ? 'OpenAI' : '미설정'})</span>
        <span class="chip">${dot(config.highlights ? 'on' : 'mid')}하이라이트 (Claude)</span>`;
   route();
 }
@@ -100,7 +100,7 @@ function homePage() {
     <div class="drop" id="drop"><div class="big">⬆</div><p><b>영상 파일을 끌어다 놓거나 클릭해서 선택</b></p><p>MP4 · MOV · MKV · WEBM · 최대 ${config.maxDurationMin || 180}분</p>
       <input type="file" id="file" accept="video/*,.mkv" hidden></div>
     <div id="up" hidden class="box" style="margin-top:16px"><div id="upname" style="margin-bottom:8px"></div><div class="progress"><i id="upbar"></i></div><div class="meta" style="margin-top:6px"><span id="uppct"></span></div></div>
-    ${!config.transcription ? `<div class="err-box">OPENAI_API_KEY가 설정되지 않아 음성 인식을 할 수 없습니다. <code>.env</code>를 설정하거나 <code>MOCK_AI=1</code>로 데모 모드를 사용하세요. (README 참고)</div>` : ''}
+    ${!config.transcription ? `<div class="err-box">음성 인식이 설정되지 않았습니다. 터미널에서 <code>npm run setup:stt</code>로 무료 로컬 음성 인식을 설치하거나, <code>.env</code>에 <code>OPENAI_API_KEY</code>를 넣으세요. (README 참고)</div>` : ''}
     <h2>최근 프로젝트</h2><div id="recent" class="grid"></div></div>`);
   $app.append(page);
   const drop = page.querySelector('#drop');

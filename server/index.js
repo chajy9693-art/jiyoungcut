@@ -143,7 +143,7 @@ app.post('/api/projects/:id/analyze', wrap(async (req, res) => {
   const p = getProject(req);
   if (p.status === 'analyzing') throw httpError(409, '이미 분석 중입니다.');
   const cap = ai.capabilities();
-  if (!cap.transcription) throw httpError(400, 'OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요. (키 없이 화면만 보려면 MOCK_AI=1)');
+  if (!cap.transcription) throw httpError(400, '음성 인식이 설정되지 않았습니다. 터미널에서 `npm run setup:stt`로 로컬 음성 인식을 설치하거나 .env에 OPENAI_API_KEY를 넣으세요.');
   if (!p.video.hasAudio && !MOCK_AI) throw httpError(400, '오디오 트랙이 없는 영상은 분석할 수 없습니다.');
   const b = req.body || {};
   const minLen = clampInt(b.minLen, 10, 120, 30);
@@ -387,7 +387,8 @@ if (process.argv[1] === __filename) {
     console.log(`jiyoungcut → http://localhost:${PORT}`);
     if (cap.mock) console.log('⚠ MOCK_AI=1: 데모 모드 (실제 음성 인식/AI 분석 없음)');
     else {
-      if (!cap.transcription) console.log('⚠ OPENAI_API_KEY 없음: 음성 인식 불가');
+      if (!cap.transcription) console.log('⚠ 음성 인식 없음: `npm run setup:stt`(로컬, 무료) 또는 OPENAI_API_KEY 필요');
+      else console.log(`음성 인식: ${cap.sttProvider === 'local' ? '로컬 whisper.cpp' : 'OpenAI'}`);
       if (cap.highlightsFallback) console.log('⚠ ANTHROPIC_API_KEY 없음: 하이라이트를 단순 규칙으로 선정');
     }
   });

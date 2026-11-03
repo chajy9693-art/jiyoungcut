@@ -25,8 +25,11 @@ cp .env.example .env   # OPENAI_API_KEY, ANTHROPIC_API_KEY 입력
 npm start              # http://localhost:3000
 ```
 
-- `OPENAI_API_KEY` — 음성 인식에 필수
-- `ANTHROPIC_API_KEY` — 없으면 발화 밀도 기반 단순 규칙으로 하이라이트를 선정(품질 낮음)
+- **음성 인식(둘 중 하나)**
+  - 무료·키 없음: `npm run setup:stt` — whisper.cpp와 모델(약 570MB)을 설치해 내 맥에서 직접 인식합니다. (애플 실리콘은 GPU 사용, 영상이 외부로 나가지 않음)
+  - OpenAI: `.env`에 `OPENAI_API_KEY`
+  - 둘 다 있으면 OpenAI를 쓰며, `STT_PROVIDER=local` 또는 `openai`로 고정할 수 있습니다.
+- `ANTHROPIC_API_KEY` — 없으면 발화 밀도 기반 단순 규칙으로 하이라이트를 선정(맥락 편집 불가, 품질 낮음)
 - API 키 없이 UI/렌더링만 확인: `MOCK_AI=1 npm start` (가짜 자막·균등 분할 구간)
 
 ## 터미널을 닫아도 계속 실행 (macOS)
@@ -53,6 +56,6 @@ data/    프로젝트별 원본/결과 (git 제외)
 
 ## 참고
 
-- 영상은 서버에 저장되고 외부 AI에는 **오디오(저비트레이트 mp3)와 전사 텍스트만** 전송됩니다.
+- 영상은 서버에 저장되고 외부 AI에는 **오디오(저비트레이트 mp3, 로컬 음성 인식 사용 시 제외)와 전사 텍스트만** 전송됩니다.
 - 렌더링은 한 번에 하나씩 순차 처리됩니다. 인증/결제/멀티유저는 없습니다(로컬·개인용).
 - 미리보기와 결과물의 자막 모양은 거의 같지만 픽셀 단위로 동일하지는 않습니다.

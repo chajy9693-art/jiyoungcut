@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chunkSegments, splitTitle } from '../server/subtitles.js';
 import { buildAss, assTime, timelineSubs } from '../server/ass.js';
-import { normalizeClips, normalizeSegments, heuristicHighlights } from '../server/ai.js';
+import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider } from '../server/ai.js';
+import { parseWhisperCppJson } from '../server/stt-local.js';
 import { buildVideoFilter } from '../server/ffmpeg.js';
 import { DEFAULTS, sanitize } from '../server/templates.js';
 
@@ -104,4 +105,24 @@ test('이어 붙인 타임라인으로 자막 시간 변환', () => {
   assert.deepEqual(out.map((s) => [s.text, s.start, s.end]), [['후킹', 1, 3], ['본론', 5, 7]]);
   const ass = buildAss({ clip: { segments: segs, title: '' }, tpl: DEFAULTS, subs: [{ start: 10, end: 12, text: '본론' }] });
   assert.match(ass, /Dialogue: 1,0:00:05.00,0:00:07.00,Sub,,0,0,0,,본론/);
+});
+
+test('whisper.cpp JSON 변환: 오프셋 적용, 소리 설명/빈 구간 제외', () => {
+  const json = { transcription: [
+    { offsets: { from: 0, to: 2500 }, text: ' 안녕하세요  여러분' },
+    { offsets: { from: 2500, to: 3000 }, text: ' [BLANK_AUDIO]' },
+    { offsets: { from: 3000, to: 3000 }, text: ' 길이 0' },
+    { offsets: { from: 3000, to: 6000 }, text: ' (음악)' },
+    { offsets: { from: 6000, to: 8200 }, text: ' 오늘은 노션입니다' },
+  ] };
+  const out = parseWhisperCppJson(json, 600);
+  assert.deepEqual(out.map((s) => [s.start, s.end, s.text]), [[600, 602.5, '안녕하세요 여러분'], [606, 608.2, '오늘은 노션입니다']]);
+});
+
+test('음성 인식 방식 선택', () => {
+  assert.equal(pickSttProvider({ explicit: '', openaiKey: 'k', localOk: true }), 'openai');
+  assert.equal(pickSttProvider({ explicit: '', openaiKey: '', localOk: true }), 'local');
+  assert.equal(pickSttProvider({ explicit: 'local', openaiKey: 'k', localOk: true }), 'local');
+  assert.equal(pickSttProvider({ explicit: 'local', openaiKey: 'k', localOk: false }), null);
+  assert.equal(pickSttProvider({ explicit: '', openaiKey: '', localOk: false }), null);
 });

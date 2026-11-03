@@ -1,4 +1,5 @@
 // jiyoungcut 프론트엔드 (빌드 없이 동작하는 단일 ES 모듈)
+import { effectiveSegments, tightenSummary, TIGHTEN_DEFAULTS } from './cuts.js';
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 let config = { templates: {} };
@@ -271,12 +272,20 @@ function editorPage(p, templates) {
   preloadFonts(templates);
   const clip = () => S.p.clips.find((c) => c.id === S.sel);
   const src = p.video.proxy ? `/media/${p.id}/proxy` : `/media/${p.id}/source`;
-  const subsIn = (c) => S.p.subtitles.filter((s) => c.segments.some((g) => s.end > g.start && s.start < g.end));
-  const segTotal = (c) => c.segments.reduce((n, g) => n + g.end - g.start, 0);
-  const segOffset = (c, i) => c.segments.slice(0, i).reduce((n, g) => n + g.end - g.start, 0);
-  const segIdxOf = (c, t) => c.segments.findIndex((g) => t >= g.start - 0.001 && t < g.end);
+  // 재생/렌더 기준 구간 = 원본 구간에서 무음·군말을 걷어낸 결과 (서버 렌더링과 같은 계산: cuts.js)
+  let effCache = { key: '', val: [] };
+  const eff = (c) => {
+    const key = c.id + JSON.stringify(c.segments) + JSON.stringify(c.tighten) + (S.p.cuts ? `${S.p.cuts.silences.length}:${S.p.cuts.fillers.length}` : '0');
+    if (effCache.key !== key) effCache = { key, val: effectiveSegments(c.segments, S.p.cuts, c.tighten) };
+    return effCache.val;
+  };
+  const curOf = (c, srcIdx) => Math.max(0, eff(c).findIndex((e) => e.src === srcIdx)); // 원본 구간 번호 → 재생 구간 번호
+  const subsIn = (c) => S.p.subtitles.filter((s) => eff(c).some((g) => s.end > g.start && s.start < g.end));
+  const segTotal = (c) => eff(c).reduce((n, g) => n + g.end - g.start, 0);
+  const segOffset = (c, i) => eff(c).slice(0, i).reduce((n, g) => n + g.end - g.start, 0);
+  const segIdxOf = (c, t) => eff(c).findIndex((g) => t >= g.start - 0.001 && t < g.end);
   const syncBounds = (c) => { c.start = Math.min(...c.segments.map((g) => g.start)); c.end = Math.max(...c.segments.map((g) => g.end)); };
-  const outStart = (c, s) => { const i = c.segments.findIndex((g) => s.end > g.start && s.start < g.end); return i < 0 ? Infinity : segOffset(c, i) + Math.max(0, s.start - c.segments[i].start); };
+  const outStart = (c, s) => { const E = eff(c); const i = E.findIndex((g) => s.end > g.start && s.start < g.end); return i < 0 ? Infinity : segOffset(c, i) + Math.max(0, s.start - E[i].start); };
   const ROLE = { hook: '후킹', body: '본론', ending: '마무리' };
   const tplOf = (c) => templates.find((t) => t.id === c.templateId) || templates[0];
   // 쇼츠별 덮어쓰기(크기/테두리)를 반영한 실제 적용 템플릿
@@ -296,6 +305,7 @@ function editorPage(p, templates) {
       <div class="timeline"><div class="tl" id="tl"></div><div class="tl-labels"><span id="tl0"></span><span id="tl1"></span></div>
         <div class="times"><div class="field"><label>선택 구간 시작</label><input type="text" id="tin"></div><div class="field"><label>선택 구간 종료</label><input type="text" id="tout"></div><div class="field"><label>선택 구간 길이</label><input type="text" id="tlen" disabled></div></div></div>
       <div class="segs" id="segs"></div>
+      <div class="segs tighten" id="tighten"></div>
     </div>
     <div class="col right" id="right"></div></div>`);
   $app.append(root);
@@ -314,7 +324,7 @@ function editorPage(p, templates) {
     try {
       const q = await api(`/api/projects/${p.id}?subs=0`);
       for (const qc of q.clips) { const c = S.p.clips.find((x) => x.id === qc.id); if (c) Object.assign(c, qc); }
-      S.seg = Math.min(S.seg, clip().segments.length - 1); S.cur = Math.min(S.cur, clip().segments.length - 1);
+      S.seg = Math.min(S.seg, clip().segments.length - 1); S.cur = Math.min(S.cur, eff(clip()).length - 1);
       computeWin(); renderAllCenter(); renderRight();
     } catch {}
   }
@@ -353,8 +363,8 @@ function editorPage(p, templates) {
       box.append(it);
     });
   }
-  function select(id) { S.sel = id; S.seg = 0; S.cur = 0; renderList(); renderRight(); computeWin(); renderAllCenter(); seek(clip().segments[0].start); updatePreview(); }
-  function renderAllCenter() { renderTimeline(); renderSegs(); }
+  function select(id) { S.sel = id; S.seg = 0; S.cur = 0; renderList(); renderRight(); computeWin(); renderAllCenter(); seek(eff(clip())[0].start); updatePreview(); }
+  function renderAllCenter() { renderTimeline(); renderSegs(); renderTighten(); }
 
   // ── 미리보기 ──
   function seek(t) { vid.currentTime = t; S.t = t; }
@@ -372,12 +382,13 @@ function editorPage(p, templates) {
     placeVideo(c, fr);
     const s = c.subtitleOn ? subsIn(c).find((x) => S.t >= x.start && S.t < x.end) : null;
     paintPhone(phone, tpl, { title: c.titleOn ? titleLines(c.title) : [], sub: s?.text || '', frame: fr });
-    const idx = S.playing ? S.cur : Math.max(0, segIdxOf(c, S.t));
-    const g = c.segments[idx];
+    const E = eff(c);
+    const idx = Math.min(E.length - 1, S.playing ? S.cur : Math.max(0, segIdxOf(c, S.t)));
+    const g = E[idx];
     const out = segOffset(c, idx) + Math.min(Math.max(0, S.t - g.start), g.end - g.start);
     $('#time').textContent = `${fmtP(out)} / ${fmtP(segTotal(c))}`;
     root.querySelectorAll('.subrow').forEach((r) => r.classList.toggle('active', r.dataset.id === s?.id));
-    root.querySelectorAll('.segrow').forEach((r) => r.classList.toggle('playing', S.playing && +r.dataset.i === S.cur));
+    root.querySelectorAll('.segrow').forEach((r) => r.classList.toggle('playing', S.playing && +r.dataset.i === E[S.cur]?.src));
     renderHead();
   }
   // 재생 중에는 구간 경계를 프레임 단위로 감시해 다음 구간으로 건너뛴다 (실제 렌더 결과와 같은 흐름)
@@ -385,10 +396,12 @@ function editorPage(p, templates) {
     if (!S.playing) return;
     const c = clip();
     S.t = vid.currentTime;
-    const g = c.segments[S.cur];
+    const E = eff(c);
+    if (S.cur >= E.length) S.cur = 0;
+    const g = E[S.cur];
     if (S.t >= g.end - 0.03 || S.t < g.start - 0.5) {
-      S.cur = (S.cur + 1) % c.segments.length;
-      seek(c.segments[S.cur].start);
+      S.cur = (S.cur + 1) % E.length;
+      seek(E[S.cur].start);
     }
     updatePreview();
     requestAnimationFrame(loop);
@@ -400,7 +413,7 @@ function editorPage(p, templates) {
     const c = clip();
     if (S.playing) { stop(); return; }
     const i = segIdxOf(c, S.t);
-    if (i < 0) { S.cur = 0; seek(c.segments[0].start); } else S.cur = i;
+    if (i < 0) { S.cur = 0; seek(eff(c)[0].start); } else S.cur = i;
     S.playing = true; vid.play(); $('#play').textContent = '⏸ 일시정지';
     requestAnimationFrame(loop);
   };
@@ -429,10 +442,21 @@ function editorPage(p, templates) {
   }
   const pos = (t) => ((t - win[0]) / (win[1] - win[0])) * 100;
   const block = (cls, a, b, extra = '') => { const l = pos(Math.max(a, win[0])); return `<div class="${cls}" style="left:${l}%;width:${pos(Math.min(b, win[1])) - l}%">${extra}</div>`; };
+  // 무음·군말 제거로 걷어내는 범위 (타임라인에 빗금으로 표시)
+  function removedRanges(c) {
+    const E = eff(c); const out = [];
+    c.segments.forEach((g, i) => {
+      let cur = g.start;
+      for (const k of E.filter((e) => e.src === i)) { if (k.start > cur + 0.01) out.push([cur, k.start]); cur = k.end; }
+      if (g.end > cur + 0.01) out.push([cur, g.end]);
+    });
+    return out.filter(([a, b]) => b - a > 0.01);
+  }
   function renderTimeline() {
     const c = clip(); const g = selSeg(); const tl = $('#tl');
     tl.innerHTML = '';
     for (const o of S.p.clips) if (o !== c) for (const og of o.segments) if (og.end > win[0] && og.start < win[1]) tl.insertAdjacentHTML('beforeend', block('other', og.start, og.end));
+    for (const [a, b] of removedRanges(c)) if (b > win[0] && a < win[1]) tl.insertAdjacentHTML('beforeend', block('cut', a, b));
     c.segments.forEach((sg, i) => { if (i !== S.seg && sg.end > win[0] && sg.start < win[1]) tl.insertAdjacentHTML('beforeend', block('sib', sg.start, sg.end, `<i>${i + 1}</i>`)); });
     tl.insertAdjacentHTML('beforeend', block('sel', g.start, g.end, `<i>${S.seg + 1}</i>`));
     tl.insertAdjacentHTML('beforeend', `<div class="handle" data-h="start" style="left:${pos(g.start)}%"></div><div class="handle" data-h="end" style="left:${pos(g.end)}%"></div><div class="head" id="head"></div>`);
@@ -464,16 +488,58 @@ function editorPage(p, templates) {
   });
   const endTl = () => {
     if (!th) return; const h = th.h; th = null; const c = clip(); const g = selSeg();
-    stop(); patchClip({ segments: c.segments }); seek(h === 'start' ? g.start : Math.max(g.start, g.end - 2)); S.cur = S.seg; computeWin(); renderAllCenter(); renderRight();
+    stop(); patchClip({ segments: c.segments }); seek(h === 'start' ? g.start : Math.max(g.start, g.end - 2)); S.cur = curOf(clip(), S.seg); computeWin(); renderAllCenter(); renderRight();
   };
   tlEl.addEventListener('pointerup', endTl); tlEl.addEventListener('pointercancel', endTl);
   const timeInput = (id, key) => $(id).addEventListener('change', (e) => {
     const v = parseT(e.target.value); const c = clip(); const g = selSeg(); const [lo, hi] = bounds(c, S.seg);
     const ns = key === 'start' ? v : g.start, ne = key === 'end' ? v : g.end;
     if (!(ns >= lo && ne <= hi && ne - ns >= 1)) { toast(`올바른 시간을 입력하세요 (이 구간은 ${fmtP(lo)} ~ ${fmtP(hi)} 사이, 최소 1초). 예) 1:23.5`, true); renderTimeline(); return; }
-    stop(); g.start = ns; g.end = ne; patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); seek(ns); S.cur = S.seg;
+    stop(); g.start = ns; g.end = ne; patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); seek(ns); S.cur = curOf(clip(), S.seg);
   });
   timeInput('#tin', 'start'); timeInput('#tout', 'end');
+
+  // ── 무음·군말 제거 ──
+  function renderTighten() {
+    const c = clip(); const box = $('#tighten'); if (!box) return;
+    const cuts = S.p.cuts;
+    if (!cuts) {
+      box.innerHTML = `<div class="segs-head"><b>무음·군말 제거</b><span class="meta">이 프로젝트는 무음 정보가 없어요. 소리만 분석하므로 금방 끝납니다.</span><button class="btn sm" id="detect">무음 분석하기</button></div>`;
+      box.querySelector('#detect').onclick = async (e) => {
+        e.target.disabled = true; e.target.textContent = '분석 중…';
+        try { S.p.cuts = await api(`/api/projects/${p.id}/detect-cuts`, { method: 'POST' }); renderTighten(); toast('무음 구간을 분석했습니다'); } catch (err) { toast(err.message, true); e.target.disabled = false; e.target.textContent = '무음 분석하기'; }
+      };
+      return;
+    }
+    const t = c.tighten || { silence: false, minSilence: TIGHTEN_DEFAULTS.minSilence, pad: TIGHTEN_DEFAULTS.pad, filler: false };
+    const sm = tightenSummary(c.segments, cuts, t);
+    box.innerHTML = `<div class="segs-head"><b>무음·군말 제거</b><span class="meta" id="tsum"></span></div>
+      <div class="tgrid">
+        <label class="toggle"><span>무음 제거</span><input type="checkbox" id="tSil" ${t.silence ? 'checked' : ''}></label>
+        <label class="toggle"><span>군말 제거 <small class="meta">(음·어 등)</small></span><input type="checkbox" id="tFil" ${t.filler ? 'checked' : ''}></label>
+        ${sliderHTML('tMin', '무음 기준', 0.3, 2, 0.1, t.minSilence, '초')}
+        ${sliderHTML('tPad', '남길 여백', 0, 0.5, 0.05, t.pad, '초')}
+      </div>
+      <div class="meta">켜면 말 사이의 긴 침묵과 군말을 잘라 템포를 빠르게 만들어요. 타임라인의 빗금 영역이 제거되고, 렌더링과 미리보기에 같은 규칙이 적용됩니다.</div>`;
+    const summary = () => {
+      const s2 = tightenSummary(c.segments, cuts, c.tighten || t);
+      box.querySelector('#tsum').textContent = (c.tighten?.silence || c.tighten?.filler)
+        ? `무음 ${s2.silences}곳 · 군말 ${s2.fillers}곳 제거 · ${s2.saved.toFixed(1)}초 줄어듦 (총 ${s2.after.toFixed(1)}초)`
+        : `감지된 무음 ${cuts.silences.length}곳 · 군말 ${cuts.fillers.length}곳`;
+    };
+    summary();
+    const set = (patch) => {
+      stop();
+      c.tighten = { silence: false, minSilence: TIGHTEN_DEFAULTS.minSilence, pad: TIGHTEN_DEFAULTS.pad, filler: false, ...(c.tighten || {}), ...patch };
+      patchClip({ tighten: c.tighten });
+      S.cur = Math.min(S.cur, eff(c).length - 1);
+      summary(); renderTimeline(); renderSegs(); renderSubRows(); renderList(); updatePreview();
+    };
+    box.querySelector('#tSil').onchange = (e) => set({ silence: e.target.checked });
+    box.querySelector('#tFil').onchange = (e) => set({ filler: e.target.checked });
+    box.querySelector('#tMin').addEventListener('input', (e) => { box.querySelector('#tMino').textContent = e.target.value + '초'; set({ minSilence: +e.target.value }); });
+    box.querySelector('#tPad').addEventListener('input', (e) => { box.querySelector('#tPado').textContent = e.target.value + '초'; set({ pad: +e.target.value }); });
+  }
 
   // ── 영상 구성 (이어 붙일 구간 목록) ──
   function excerpt(g) { const s = S.p.subtitles.find((x) => x.end > g.start && x.start < g.end && x.text); return s ? s.text : ''; }
@@ -494,10 +560,10 @@ function editorPage(p, templates) {
           stop();
           if (a === 'del') { c.segments.splice(i, 1); S.seg = Math.min(S.seg, c.segments.length - 1); }
           else { const j = a === 'up' ? i - 1 : i + 1; [c.segments[i], c.segments[j]] = [c.segments[j], c.segments[i]]; S.seg = j; }
-          S.cur = S.seg; patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); seek(selSeg().start); updatePreview(); renderList();
+          S.cur = curOf(clip(), S.seg); patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); seek(selSeg().start); updatePreview(); renderList();
           return;
         }
-        stop(); S.seg = i; S.cur = i; computeWin(); renderAllCenter(); seek(g.start); updatePreview();
+        stop(); S.seg = i; S.cur = curOf(c, i); computeWin(); renderAllCenter(); seek(g.start); updatePreview();
       };
       row.querySelector('select').onchange = (e) => { g.role = e.target.value; e.target.className = `role ${g.role}`; patchClip({ segments: c.segments }); };
       box.append(row);
@@ -511,7 +577,7 @@ function editorPage(p, templates) {
       for (const g of c.segments) if (g.start >= start && g.start < end) end = g.start;
       if (end - start < 1) { toast('현재 위치에 구간을 추가할 공간이 없습니다. 재생 위치를 옮겨 보세요.', true); return; }
       c.segments.push({ start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10, role: 'body' });
-      S.seg = c.segments.length - 1; S.cur = S.seg;
+      S.seg = c.segments.length - 1; S.cur = curOf(clip(), S.seg);
       patchClip({ segments: c.segments }); computeWin(); renderAllCenter(); renderRight(); renderList(); seek(selSeg().start); updatePreview();
     };
   }
@@ -615,7 +681,7 @@ function editorPage(p, templates) {
       select(S.p.clips[0].id);
     };
     q('#addsub').onclick = async () => {
-      const cg = c.segments[Math.max(0, segIdxOf(c, S.t))];
+      const cg = eff(c)[Math.max(0, segIdxOf(c, S.t))];
       const t = Math.min(Math.max(S.t, cg.start), cg.end - 0.5);
       try {
         const res = await api(`/api/projects/${p.id}/subtitles`, { method: 'PATCH', body: { adds: [{ start: t, end: Math.min(cg.end, t + 2), text: '새 자막' }] } });
@@ -646,8 +712,8 @@ function editorPage(p, templates) {
     const subs = subsIn(c).sort((x, y) => outStart(c, x) - outStart(c, y));
     box.innerHTML = subs.length ? '' : '<div class="meta">이 구간에는 자막이 없습니다.</div>';
     for (const s of subs) {
-      const si = c.segments.findIndex((g) => s.end > g.start && s.start < g.end);
-      const sg = c.segments[si];
+      const si = eff(c).findIndex((g) => s.end > g.start && s.start < g.end);
+      const sg = eff(c)[si];
       const row = el(`<div class="subrow" data-id="${s.id}"><span class="tm">${fmtP(outStart(c, s))}</span><input type="text" value="${esc(s.text)}"><button class="x" title="삭제">✕</button></div>`);
       row.querySelector('.tm').onclick = () => { stop(); S.cur = si; seek(Math.max(sg.start, s.start)); };
       row.querySelector('input').oninput = (e) => { s.text = e.target.value; subSave.updates.set(s.id, s.text); flushSubs(); updatePreview(); };
@@ -709,7 +775,7 @@ function editorPage(p, templates) {
 
   cleanup = () => { S.playing = false; vid.pause(); };
   renderList(); renderRight(); computeWin(); renderAllCenter();
-  vid.addEventListener('loadedmetadata', () => { seek(clip().segments[0].start); updatePreview(); }, { once: true });
+  vid.addEventListener('loadedmetadata', () => { seek(eff(clip())[0].start); updatePreview(); }, { once: true });
   updatePreview(); schedulePoll();
 }
 

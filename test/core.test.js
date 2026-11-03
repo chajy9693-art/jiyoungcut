@@ -5,7 +5,9 @@ import { buildAss, assTime, timelineSubs, withHangulFallback, assColor } from '.
 import { fontById, FONT_CATALOG } from '../server/fonts.js';
 import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider } from '../server/ai.js';
 import { parseWhisperCppJson } from '../server/stt-local.js';
-import { buildVideoFilter } from '../server/ffmpeg.js';
+import { buildVideoFilter, buildRenderGraph } from '../server/ffmpeg.js';
+import { effectiveSegments, tightenSummary, sanitizeTighten } from '../public/cuts.js';
+import { parseSilenceDetect, findFillers, fillersFromSegments, buildCuts } from '../server/cuts.js';
 import { DEFAULTS, sanitize, sanitizeOverrides, applyOverrides } from '../server/templates.js';
 import { resolveFrame, framePixels, cropBox, sanitizeFrame } from '../server/layout.js';
 
@@ -255,4 +257,60 @@ test('템플릿 영상 크기: 레이아웃 기본값에서 시작, 범위 보�
   assert.deepEqual(framePixels(resolveFrame(tp)), { fw: 864, fh: 768, x0: 108, y0: 576 });
   // 이전에 저장된(프레임 값이 없는) 템플릿은 레이아웃 기본값 그대로
   assert.deepEqual(resolveFrame({ layout: 'framed', bgColor: '#000000' }), { w: 1, h: 0.5625, cy: 0.5, bg: '#000000' });
+});
+
+test('무음 제거: 긴 침묵은 2*pad 쉼으로 줄이고, 짧은 침묵은 유지', () => {
+  const cuts = { silences: [{ start: 12, end: 14 }, { start: 20, end: 20.4 }], fillers: [] };
+  const opts = { silence: true, minSilence: 0.6, pad: 0.15, filler: false };
+  const eff = effectiveSegments([{ start: 10, end: 30, role: 'body' }], cuts, opts);
+  // 12~14 침묵 → 12.15~13.85 제거. 0.4초 침묵은 minSilence 미만이라 그대로
+  assert.deepEqual(eff.map((e) => [e.start, e.end, e.src]), [[10, 12.15, 0], [13.85, 30, 0]]);
+  const sum = tightenSummary([{ start: 10, end: 30 }], cuts, opts);
+  assert.equal(Math.round(sum.saved * 100) / 100, 1.7);
+  assert.equal(sum.silences, 1);
+  // 옵션이 꺼져 있거나 데이터가 없으면 원본 그대로
+  assert.deepEqual(effectiveSegments([{ start: 10, end: 30 }], cuts, null).map((e) => [e.start, e.end]), [[10, 30]]);
+  assert.deepEqual(effectiveSegments([{ start: 10, end: 30 }], null, opts).map((e) => [e.start, e.end]), [[10, 30]]);
+});
+
+test('군말 제거 + 여러 구간: 순서·역할·원본 구간(src) 유지, 전부 지워지면 원본 유지', () => {
+  const cuts = { silences: [{ start: 105, end: 108 }], fillers: [{ start: 3, end: 3.5, text: '음' }, { start: 50, end: 60, text: '음' }] };
+  const opts = { silence: true, minSilence: 0.6, pad: 0.15, filler: true };
+  const segs = [{ start: 100, end: 110, role: 'hook' }, { start: 0, end: 20, role: 'body' }, { start: 50, end: 60, role: 'ending' }];
+  const eff = effectiveSegments(segs, cuts, opts);
+  assert.deepEqual(eff.map((e) => [e.role, e.src, e.start, e.end]), [
+    ['hook', 0, 100, 105.15], ['hook', 0, 107.85, 110],
+    ['body', 1, 0, 3], ['body', 1, 3.5, 20],
+    ['ending', 2, 50, 60], // 구간 전체가 군말이라 전부 지워지게 되므로 원본 유지
+  ]);
+  // 켜진 항목만 반영
+  assert.equal(effectiveSegments(segs, cuts, { ...opts, filler: false }).filter((e) => e.src === 1).length, 1);
+});
+
+test('무음 감지 출력 파싱, 군말 찾기(단어/문장), 옵션 검증', () => {
+  const log = `[silencedetect @ 0x1] silence_start: 3.5\n[silencedetect @ 0x1] silence_end: 5.25 | silence_duration: 1.75\n[silencedetect @ 0x1] silence_start: 118.4`;
+  assert.deepEqual(parseSilenceDetect(log, 120), [{ start: 3.5, end: 5.25 }, { start: 118.4, end: 120 }]);
+  const words = [{ start: 1, end: 1.4, text: ' 음,' }, { start: 2, end: 2.5, text: '안녕' }, { start: 3, end: 3.3, text: 'Um...' }, { start: 4, end: 9, text: '음' }];
+  assert.deepEqual(findFillers(words).map((f) => f.text), ['음', 'um']); // 1.5초를 넘는 건 군말이 아니라고 판단
+  const segs = [{ start: 0, end: 1.2, text: '음...' }, { start: 2, end: 5, text: '음 그래서 오늘은' }, { start: 6, end: 7, text: '어 어' }];
+  assert.deepEqual(fillersFromSegments(segs).map((f) => [f.start, f.end]), [[0, 1.2], [6, 7]]);
+  assert.equal(buildCuts({ silences: [], words, segments: segs }).fillers.length, 2); // 단어 정보가 있으면 그걸 우선
+  assert.deepEqual(sanitizeTighten({ silence: 1, minSilence: 99, pad: -1, filler: 0 }), { silence: true, minSilence: 2, pad: 0, filler: false });
+  assert.equal(sanitizeTighten(null), null);
+});
+
+test('렌더 그래프: 일부를 걷어낸 구간은 select로, 그대로인 구간은 단순 입력으로', () => {
+  const eff = [{ start: 100, end: 105, src: 0 }, { start: 0, end: 4, src: 1 }, { start: 5, end: 9, src: 1 }, { start: 11, end: 20, src: 1 }];
+  const { inputs, graph, total } = buildRenderGraph({ eff, hasAudio: true, vf: 'crop=1:1:0:0' });
+  assert.deepEqual(inputs.filter((x) => x !== '__SRC__' && x !== '-i'), ['-ss', '100.000', '-t', '5.000', '-ss', '0.000', '-t', '20.000']);
+  assert.equal(total, 5 + 4 + 4 + 9);
+  assert.match(graph, /\[0:v\]setpts=PTS-STARTPTS,fps=30\[v0\]/);
+  assert.match(graph, /\[1:v\]fps=30,select='gte\(t,0.000\)\*lt\(t,4.000\)\+gte\(t,5.000\)\*lt\(t,9.000\)\+gte\(t,11.000\)\*lt\(t,20.000\)',setpts=N\/\(30\*TB\)\[v1\]/);
+  assert.match(graph, /\[1:a\]aresample=44100,aselect='/);
+  assert.match(graph, /concat=n=2:v=1:a=1\[vc\]\[aout\];\[vc\]crop=1:1:0:0\[vout\]$/);
+  // 제거된 시간만큼 자막 타임라인도 줄어든다
+  const ass = buildAss({ clip: { segments: eff, title: '' }, tpl: sanitize({}), subs: [{ start: 8, end: 12, text: '걸침' }] });
+  // 타임라인: 0~5(구간0) 5~9(0~4) 9~13(5~9) 13~22(11~20). 원본 8~12초 자막은 8~9→12~13, 11~12→13~14로 나뉜다
+  assert.match(ass, /Dialogue: 1,0:00:12.00,0:00:13.00,Sub,,0,0,0,,[^\n]*걸침/);
+  assert.match(ass, /Dialogue: 1,0:00:13.00,0:00:14.00,Sub,,0,0,0,,[^\n]*걸침/);
 });

@@ -347,10 +347,10 @@ function editorPage(p, templates) {
     const c = clip();
     Object.assign(c, patch);
     if (patch.segments) { syncBounds(c); patch = { segments: c.segments }; }
-    if (c.render?.status === 'done') c.render.stale = true;
+    const affectsVideo = Object.keys(patch).some((k) => !['topic', 'rationale', 'description', 'hashtags'].includes(k));
+    if (affectsVideo && c.render?.status === 'done') c.render.stale = true;
     pending.set(c.id, { ...(pending.get(c.id) || {}), ...patch });
-    renderList(); // '수정됨' 표시는 저장을 기다리지 않고 바로
-    refreshNoteStat();
+    if (affectsVideo) { renderList(); refreshNoteStat(); } // '수정됨' 표시는 저장을 기다리지 않고 바로
     flushClip();
   }
 
@@ -624,22 +624,16 @@ function editorPage(p, templates) {
   }
   function renderNote() {
     const c = clip(); const box = root.querySelector('#ainote'); if (!box) return;
-    const has = c.rationale || c.feedback;
-    box.innerHTML = `<h4>AI 편집 노트 <button class="btn sm" id="noteToggle">${S.noteOpen ? '접기' : '펼치기'}</button></h4>
+    box.innerHTML = `<h4>컷편집 노트 <button class="btn sm" id="noteToggle">${S.noteOpen ? '접기' : '펼치기'}</button></h4>
       <div class="notebody" ${S.noteOpen ? '' : 'hidden'}>
-        ${c.topic ? `<div class="topicchip"><b>소주제</b> ${esc(c.topic)}${c.topicRange ? ` <small>${fmt(c.topicRange[0])}–${fmt(c.topicRange[1])}</small>` : ''}</div>` : ''}
-        ${c.rationale ? `<div class="nblock"><b>왜 이렇게 컷편집했나</b><p>${esc(c.rationale)}</p></div>` : ''}
-        ${c.feedback ? `<div class="nblock fb"><b>의견·피드백</b><p>${esc(c.feedback)}</p></div>` : ''}
-        ${has ? '' : '<div class="meta">이 쇼츠에는 AI 편집 노트가 없어요. 아래 버튼으로 현재 편집을 보고 의견을 받아볼 수 있어요.</div>'}
-        <div class="nblock stat"><b>현재 편집 요약</b><p id="nstat">${esc(editStats(c))}</p></div>
-        <button class="btn sm" id="renote">현재 편집 기준으로 피드백 다시 받기</button>
+        <div class="field"><label>주제</label><input type="text" id="noteTopic" maxlength="100" placeholder="이 쇼츠가 다루는 소주제 한 문장" value="${esc(c.topic || '')}">
+          ${c.topicRange ? `<span class="meta">소주제 구간 ${fmt(c.topicRange[0])}–${fmt(c.topicRange[1])}</span>` : ''}</div>
+        <div class="field"><label>컷편집 요약</label><textarea id="noteWhy" rows="4" maxlength="600" placeholder="어떻게 컷편집했는지 적어 두세요. 예) 결론을 후킹으로 앞에 두고, 잡담 구간은 덜어냈어요.">${esc(c.rationale || '')}</textarea></div>
+        <div class="nblock stat"><b>현재 편집 요약 (자동)</b><p id="nstat">${esc(editStats(c))}</p></div>
       </div>`;
     box.querySelector('#noteToggle').onclick = () => { S.noteOpen = !S.noteOpen; renderNote(); };
-    box.querySelector('#renote').onclick = async (e) => {
-      e.target.disabled = true; e.target.textContent = '피드백 작성 중…';
-      try { const n = await api(`/api/projects/${p.id}/clips/${c.id}/note`, { method: 'POST' }); Object.assign(c, n); toast('편집 노트를 새로 썼어요'); } catch (err) { toast(err.message, true); }
-      renderNote();
-    };
+    box.querySelector('#noteTopic').oninput = (e) => patchClip({ topic: e.target.value });
+    box.querySelector('#noteWhy').oninput = (e) => patchClip({ rationale: e.target.value });
   }
   const refreshNoteStat = () => { const n = root.querySelector('#nstat'); if (n) n.textContent = editStats(clip()); };
 

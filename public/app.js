@@ -47,16 +47,41 @@ const fontStack = (id) => {
   return `'jy-${id}'${f?.fallback ? `, 'jy-${f.fallback}'` : ''}, sans-serif`;
 };
 
+// 영상 프레임(서버 server/layout.js 와 같은 규칙): 템플릿 레이아웃의 기본값 위에 쇼츠별 조정(clip.frame)을 덮는다
+const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+const defaultFrame = (tpl) => (tpl.layout === 'framed' ? { w: 1, h: 1080 / 1920, cy: 0.5, bg: tpl.bgColor } : { w: 1, h: 1, cy: 0.5, bg: '#000000' });
+function resolveFrame(tpl, clip = {}) {
+  const d = defaultFrame(tpl); const f = clip.frame || {};
+  const w = clampN(f.w ?? d.w, 0.3, 1, d.w);
+  const h = clampN(f.h ?? d.h, 0.2, 1, d.h);
+  return { w, h, cy: clampN(f.cy ?? d.cy, h / 2, 1 - h / 2, d.cy), bg: d.bg };
+}
+
+const sliderHTML = (id, label, min, max, step, val, unit = '') => `<div class="slider"><label>${label}</label><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}"><output id="${id}o">${val}${unit}</output></div>`;
+
+/** 템플릿에 쓰인 폰트를 미리 내려받아, 템플릿을 바꿀 때 글꼴이 늦게 바뀌지 않게 한다 */
+function preloadFonts(list) {
+  const ids = new Set();
+  for (const t of list) for (const k of ['titleFont', 'subFont', 'accountFont']) {
+    ids.add(t[k]);
+    const f = (config.fonts || []).find((x) => x.id === t[k]);
+    if (f?.fallback) ids.add(f.fallback);
+  }
+  for (const id of ids) document.fonts?.load(`40px 'jy-${id}'`, '가나다ABC').catch(() => {});
+}
+
 const PHONE_HTML = '<div class="vwrap"></div><div class="ov ov-title"></div><div class="ov ov-sub"></div><div class="ov ov-acc"></div><div class="gv"></div><div class="gh"></div>';
 
 /**
  * 템플릿(레이아웃·폰트·색·위치·계정명)을 9:16 미리보기 박스에 반영 — 편집기와 템플릿 설정 화면이 공용.
  * 좌표는 캔버스 비율(요소 중심), 크기는 1080x1920 기준 px를 cqw로 환산해 실제 렌더링과 같은 비율을 유지한다.
  */
-function paintPhone(phone, tpl, { title = [], sub = '', accountPlaceholder = '' } = {}) {
-  const framed = tpl.layout === 'framed';
-  phone.classList.toggle('framed', framed);
-  phone.style.background = framed ? tpl.bgColor : '#000';
+function paintPhone(phone, tpl, { title = [], sub = '', accountPlaceholder = '', frame = null } = {}) {
+  const fr = frame || defaultFrame(tpl);
+  phone.style.background = fr.bg;
+  const vw = phone.querySelector('.vwrap');
+  vw.style.left = `${((1 - fr.w) / 2) * 100}%`; vw.style.width = `${fr.w * 100}%`;
+  vw.style.top = `${(fr.cy - fr.h / 2) * 100}%`; vw.style.height = `${fr.h * 100}%`;
   const rgba = (hex, op) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${op / 100})`; };
   // 위치·폰트·크기·테두리를 요소에 반영하고, 배경이 켜져 있으면 글자를 박스 span으로 감싼다
   const put = (el, pre, x, y, font, size, color, html) => {
@@ -238,7 +263,8 @@ function analyzingPage(p) {
 // ───────────────────────── 에디터 ─────────────────────────
 
 function editorPage(p, templates) {
-  const S = { p, sel: p.clips[0].id, seg: 0, cur: 0, t: 0, playing: false };
+  const S = { p, sel: p.clips[0].id, seg: 0, cur: 0, t: 0, playing: false, styEl: 'title' };
+  preloadFonts(templates);
   const clip = () => S.p.clips.find((c) => c.id === S.sel);
   const src = p.video.proxy ? `/media/${p.id}/proxy` : `/media/${p.id}/source`;
   const subsIn = (c) => S.p.subtitles.filter((s) => c.segments.some((g) => s.end > g.start && s.start < g.end));
@@ -249,7 +275,9 @@ function editorPage(p, templates) {
   const outStart = (c, s) => { const i = c.segments.findIndex((g) => s.end > g.start && s.start < g.end); return i < 0 ? Infinity : segOffset(c, i) + Math.max(0, s.start - c.segments[i].start); };
   const ROLE = { hook: '후킹', body: '본론', ending: '마무리' };
   const tplOf = (c) => templates.find((t) => t.id === c.templateId) || templates[0];
-  const videoW = () => (tplOf(clip()).layout === 'framed' ? aspect * 100 : aspect * (16 / 9) * 100);
+  // 쇼츠별 덮어쓰기(크기/테두리)를 반영한 실제 적용 템플릿
+  const effTpl = (c) => ({ ...tplOf(c), ...(c.overrides || {}) });
+  const EL_STY = { title: { label: '제목', min: 40, max: 130 }, sub: { label: '자막', min: 36, max: 110 }, account: { label: '계정명', min: 24, max: 110 } };
 
   $app.innerHTML = '';
   const root = el(`<div class="editor">
@@ -289,7 +317,12 @@ function editorPage(p, templates) {
   const flushClip = debounce(async () => {
     for (const [id, patch] of [...pending]) {
       pending.delete(id);
-      try { const c = await api(`/api/projects/${p.id}/clips/${id}`, { method: 'PATCH', body: patch }); Object.assign(S.p.clips.find((x) => x.id === id), c); }
+      try {
+        const resp = await api(`/api/projects/${p.id}/clips/${id}`, { method: 'PATCH', body: patch });
+        // 편집 중인 값은 화면(로컬)이 기준이라 덮어쓰지 않고, 서버가 계산한 값(구간 범위, 렌더 상태 등)만 반영
+        const target = S.p.clips.find((x) => x.id === id);
+        for (const [k, v] of Object.entries(resp)) if (!(k in patch) || k === 'start' || k === 'end') target[k] = v;
+      }
       catch (e) { toast(e.message, true); await reloadClips(); }
     }
     renderList(); renderRender(); renderSegs();
@@ -300,6 +333,7 @@ function editorPage(p, templates) {
     if (patch.segments) { syncBounds(c); patch = { segments: c.segments }; }
     if (c.render?.status === 'done') c.render.stale = true;
     pending.set(c.id, { ...(pending.get(c.id) || {}), ...patch });
+    renderList(); // '수정됨' 표시는 저장을 기다리지 않고 바로
     flushClip();
   }
 
@@ -320,13 +354,20 @@ function editorPage(p, templates) {
 
   // ── 미리보기 ──
   function seek(t) { vid.currentTime = t; S.t = t; }
+  // 영상(video)을 프레임 안에 cover로 채우고 확대/이동을 적용. 서버 cropBox()와 같은 기하
+  function placeVideo(c, fr) {
+    const a = (fr.w * 9) / (fr.h * 16); // 프레임 가로세로비 (캔버스가 9:16이라 환산)
+    const r = aspect / a; const z = c.zoom || 1;
+    const wPct = (r >= 1 ? r : 1) * 100 * z; const hPct = (r >= 1 ? 1 : 1 / r) * 100 * z;
+    vid.style.width = `${wPct}%`; vid.style.height = `${hPct}%`;
+    vid.style.left = `${-(wPct - 100) * c.cropX}%`; vid.style.top = `${-(hPct - 100) * (c.cropY ?? 0.5)}%`;
+    return { wPct, hPct };
+  }
   function updatePreview() {
-    const c = clip(); const tpl = tplOf(c);
-    const W = videoW(); // 영상 폭 (phone 폭 = 100cqw)
-    if (W > 100) { vid.style.width = `${W}cqw`; vid.style.left = `${-(W - 100) * c.cropX}cqw`; vid.style.objectFit = ''; }
-    else { vid.style.width = '100%'; vid.style.left = '0'; vid.style.objectFit = 'cover'; }
+    const c = clip(); const tpl = effTpl(c); const fr = resolveFrame(tpl, c);
+    placeVideo(c, fr);
     const s = c.subtitleOn ? subsIn(c).find((x) => S.t >= x.start && S.t < x.end) : null;
-    paintPhone(phone, tpl, { title: c.titleOn ? titleLines(c.title) : [], sub: s?.text || '' });
+    paintPhone(phone, tpl, { title: c.titleOn ? titleLines(c.title) : [], sub: s?.text || '', frame: fr });
     const idx = S.playing ? S.cur : Math.max(0, segIdxOf(c, S.t));
     const g = c.segments[idx];
     const out = segOffset(c, idx) + Math.min(Math.max(0, S.t - g.start), g.end - g.start);
@@ -360,19 +401,20 @@ function editorPage(p, templates) {
     requestAnimationFrame(loop);
   };
 
-  // 크롭 드래그
+  // 영상 이동(드래그): 확대했거나 프레임보다 영상이 클 때 가로/세로로 움직인다
   let drag = null;
-  phone.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, crop: clip().cropX }; phone.setPointerCapture(e.pointerId); });
+  phone.addEventListener('pointerdown', (e) => { const c = clip(); drag = { x: e.clientX, y: e.clientY, cx: c.cropX, cy: c.cropY ?? 0.5 }; phone.setPointerCapture(e.pointerId); });
   phone.addEventListener('pointermove', (e) => {
     if (!drag) return;
-    const W = videoW();
-    if (W <= 100) return;
-    const px = (phone.clientWidth * (W - 100)) / 100;
-    const c = clip();
-    c.cropX = Math.min(1, Math.max(0, drag.crop - (e.clientX - drag.x) / px));
-    updatePreview(); renderRight(true);
+    const c = clip(); const fr = resolveFrame(effTpl(c), c);
+    const { wPct, hPct } = placeVideo(c, fr);
+    const slackX = ((wPct - 100) / 100) * fr.w * phone.clientWidth; // 움직일 수 있는 여유(px)
+    const slackY = ((hPct - 100) / 100) * fr.h * phone.clientHeight;
+    if (slackX > 1) c.cropX = clampN(drag.cx - (e.clientX - drag.x) / slackX, 0, 1, 0.5);
+    if (slackY > 1) c.cropY = clampN(drag.cy - (e.clientY - drag.y) / slackY, 0, 1, 0.5);
+    updatePreview(); syncFrameInputs();
   });
-  const endDrag = () => { if (drag) { drag = null; patchClip({ cropX: clip().cropX }); } };
+  const endDrag = () => { if (drag) { drag = null; patchClip({ cropX: clip().cropX, cropY: clip().cropY ?? 0.5 }); } };
   phone.addEventListener('pointerup', endDrag); phone.addEventListener('pointercancel', endDrag);
 
   // ── 타임라인 (선택한 구간 중심) ──
@@ -478,18 +520,36 @@ function editorPage(p, templates) {
     try { await api(`/api/projects/${p.id}/subtitles`, { method: 'PATCH', body }); renderList(); renderRender(); } catch (e) { toast(e.message, true); }
   }, 600);
 
-  function renderRight(cropOnly) {
-    const c = clip();
-    if (cropOnly) { const r = root.querySelector('#crop'); if (r) r.value = Math.round(c.cropX * 100); return; }
+  // 영상 화면 슬라이더 값을 현재 상태에 맞춰 갱신 (드래그/초기화/템플릿 변경 후)
+  function syncFrameInputs() {
+    const c = clip(); const fr = resolveFrame(effTpl(c), c);
+    const set = (id, v, unit = '%') => { const i = root.querySelector('#' + id); if (!i) return; i.value = v; root.querySelector(`#${id}o`).textContent = v + unit; };
+    set('fw', Math.round(fr.w * 100)); set('fh', Math.round(fr.h * 100)); set('fcy', Math.round(fr.cy * 100));
+    set('zoom', Math.round((c.zoom || 1) * 100)); set('cx', Math.round(c.cropX * 100)); set('cy2', Math.round((c.cropY ?? 0.5) * 100));
+  }
+
+  function renderRight() {
+    const c = clip(); const eff = effTpl(c); const fr = resolveFrame(eff, c);
     const r = $('#right');
     r.innerHTML = `
       <div class="sect"><h4>제목</h4>
         <div class="field"><textarea id="title" rows="2" placeholder="쇼츠 제목 (줄바꿈으로 2줄)">${esc(c.title)}</textarea></div>
         <label class="toggle"><span>제목 표시</span><input type="checkbox" id="titleOn" ${c.titleOn ? 'checked' : ''}></label></div>
-      <div class="sect"><h4>화면 (9:16 크롭)</h4><div class="field"><label>크롭 위치 (왼쪽 ↔ 오른쪽)</label><input type="range" id="crop" min="0" max="100" value="${Math.round(c.cropX * 100)}"></div></div>
       <div class="sect"><h4>템플릿 <a href="#/templates" style="color:var(--accent);font-weight:400">편집 →</a></h4>
-        <div class="field"><select id="tplsel">${templates.map((t) => `<option value="${t.id}" ${t.id === tplOf(c).id ? 'selected' : ''}>${esc(t.name)}${t.account ? ' · ' + esc(t.account) : ''}</option>`).join('')}</select></div>
-        <div class="meta">계정명·배경색·제목/자막 스타일이 템플릿으로 적용됩니다.</div></div>
+        <div class="tplchips" id="tplchips">${templates.map((t) => `<button class="tplchip ${t.id === tplOf(c).id ? 'on' : ''}" data-id="${t.id}"><span class="sw" style="background:${t.layout === 'framed' ? t.bgColor : '#000'}"></span><b>${esc(t.name)}</b><small>${t.account ? esc(t.account) + ' · ' : ''}${t.layout === 'framed' ? '프레임' : '전체화면'}</small></button>`).join('')}</div>
+        <button class="btn sm" id="applyall">모든 쇼츠에 이 템플릿 적용</button>
+        <div class="meta">누르면 바로 미리보기에 반영돼요. 이 영상만 조정한 텍스트 스타일은 유지됩니다.</div></div>
+      <div class="sect"><h4>영상 화면 <button class="btn sm" id="frameReset">초기화</button></h4>
+        ${sliderHTML('fw', '영상 너비', 30, 100, 1, Math.round(fr.w * 100), '%')}
+        ${sliderHTML('fh', '영상 높이', 20, 100, 1, Math.round(fr.h * 100), '%')}
+        ${sliderHTML('fcy', '세로 위치', 0, 100, 1, Math.round(fr.cy * 100), '%')}
+        ${sliderHTML('zoom', '확대', 100, 300, 1, Math.round((c.zoom || 1) * 100), '%')}
+        ${sliderHTML('cx', '가로 이동', 0, 100, 1, Math.round(c.cropX * 100), '%')}
+        ${sliderHTML('cy2', '세로 이동', 0, 100, 1, Math.round((c.cropY ?? 0.5) * 100), '%')}
+        <div class="meta">영상의 너비·높이·위치와 확대/이동을 조정해요. 미리보기를 끌어서 옮길 수도 있어요.</div></div>
+      <div class="sect"><h4>텍스트 스타일 <span class="meta">(이 영상만)</span> <button class="btn sm" id="styReset">초기화</button></h4>
+        <div class="eltabs" id="styTabs">${Object.entries(EL_STY).map(([k, m]) => `<button data-k="${k}" class="${k === S.styEl ? 'on' : ''}">${m.label}</button>`).join('')}</div>
+        <div id="stypanel" class="formgrid"></div></div>
       <div class="sect"><h4>자막</h4>
         <label class="toggle"><span>자막 표시</span><input type="checkbox" id="subOn" ${c.subtitleOn ? 'checked' : ''}></label>
         <div class="subrows" id="subrows"></div><button class="btn sm" id="addsub">＋ 현재 위치에 자막 추가</button></div>
@@ -501,10 +561,45 @@ function editorPage(p, templates) {
     const q = (s) => r.querySelector(s);
     q('#title').oninput = (e) => { patchClip({ title: e.target.value }); updatePreview(); };
     q('#titleOn').onchange = (e) => { patchClip({ titleOn: e.target.checked }); updatePreview(); };
-    q('#crop').oninput = (e) => { clip().cropX = e.target.value / 100; updatePreview(); };
-    q('#crop').onchange = () => patchClip({ cropX: clip().cropX });
     q('#subOn').onchange = (e) => { patchClip({ subtitleOn: e.target.checked }); updatePreview(); };
-    q('#tplsel').onchange = (e) => { patchClip({ templateId: e.target.value }); updatePreview(); };
+
+    // 템플릿: 누르는 즉시 미리보기·목록·패널에 반영하고 저장은 뒤에서
+    q('#tplchips').onclick = (e) => {
+      const chip = e.target.closest('.tplchip'); if (!chip || chip.dataset.id === c.templateId) return;
+      const next = templates.find((t) => t.id === chip.dataset.id);
+      if (tplOf(c).layout !== next.layout) c.frame = null; // 영상 프레임 조정은 레이아웃 기준이라 레이아웃이 바뀌면 초기화
+      patchClip({ templateId: next.id, frame: c.frame ?? null });
+      updatePreview(); renderRight();
+    };
+    q('#applyall').onclick = async () => {
+      try {
+        const res = await api(`/api/projects/${p.id}/apply-template`, { method: 'POST', body: { templateId: tplOf(c).id } });
+        for (const u of res) Object.assign(S.p.clips.find((x) => x.id === u.id), u);
+        renderList(); updatePreview(); toast(`모든 쇼츠(${res.length}개)에 적용했습니다`);
+      } catch (err) { toast(err.message, true); }
+    };
+
+    // 영상 화면 (너비·높이·세로 위치·확대·이동) — 슬라이더를 움직이는 동안 바로 반영
+    const bind = (id, fn, unit = '%') => q('#' + id).addEventListener('input', (e) => { q(`#${id}o`).textContent = e.target.value + unit; fn(+e.target.value / 100); });
+    const setFrame = (patch) => {
+      const cur = resolveFrame(effTpl(c), c);
+      const f = { w: cur.w, h: cur.h, cy: cur.cy, ...patch };
+      f.cy = clampN(f.cy, f.h / 2, 1 - f.h / 2, 0.5);
+      c.frame = f; patchClip({ frame: f }); updatePreview(); syncFrameInputs();
+    };
+    bind('fw', (v) => setFrame({ w: v })); bind('fh', (v) => setFrame({ h: v })); bind('fcy', (v) => setFrame({ cy: v }));
+    bind('zoom', (v) => { c.zoom = v; patchClip({ zoom: v }); updatePreview(); });
+    bind('cx', (v) => { c.cropX = v; patchClip({ cropX: v }); updatePreview(); });
+    bind('cy2', (v) => { c.cropY = v; patchClip({ cropY: v }); updatePreview(); });
+    q('#frameReset').onclick = () => {
+      Object.assign(c, { frame: null, zoom: 1, cropX: 0.5, cropY: 0.5 });
+      patchClip({ frame: null, zoom: 1, cropX: 0.5, cropY: 0.5 }); updatePreview(); syncFrameInputs();
+    };
+
+    // 텍스트 스타일(이 영상만): 요소별 크기·테두리
+    q('#styTabs').onclick = (e) => { const k = e.target.dataset.k; if (!k) return; S.styEl = k; q('#styTabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === k)); renderStyPanel(); };
+    q('#styReset').onclick = () => { c.overrides = {}; patchClip({ overrides: {} }); updatePreview(); renderStyPanel(); };
+    renderStyPanel();
     q('#desc').oninput = (e) => patchClip({ description: e.target.value });
     q('#tags').onchange = (e) => patchClip({ hashtags: e.target.value.split(/[\s,]+/).map((h) => h.replace(/^#/, '')).filter(Boolean) });
     q('#copy').onclick = () => navigator.clipboard?.writeText(`${clip().title.replace(/\n/g, ' ')}\n\n${q('#desc').value}\n\n${q('#tags').value}`).then(() => toast('복사했습니다'));
@@ -524,6 +619,22 @@ function editorPage(p, templates) {
       } catch (e) { toast(e.message, true); }
     };
     renderSubRows(); renderRender();
+  }
+
+  function renderStyPanel() {
+    const c = clip(); const eff = effTpl(c); const k = S.styEl; const m = EL_STY[k];
+    const box = root.querySelector('#stypanel'); if (!box) return;
+    const mine = () => Object.keys(c.overrides || {}).some((x) => x.startsWith(k));
+    box.innerHTML = `
+      ${sliderHTML('sSize', '크기', m.min, m.max, 1, eff[k + 'Size'], 'px')}
+      <div class="decor ${eff[k + 'OutlineOn'] ? '' : 'off'}" id="sd"><label class="toggle"><span>테두리</span><input type="checkbox" id="sOn" ${eff[k + 'OutlineOn'] ? 'checked' : ''}></label>
+        <div class="opts"><div class="colorrow"><input type="color" id="sCol" value="${eff[k + 'OutlineColor']}"><span class="meta">테두리 색</span></div>${sliderHTML('sW', '두께', 1, 24, 1, eff[k + 'OutlineWidth'], 'px')}</div></div>
+      <div class="meta ovnote" id="ovnote" ${mine() ? '' : 'hidden'} style="color:#a5b4fc">${m.label}: 이 영상만 따로 조정됨 (템플릿 값과 다름)</div>`;
+    const set = (key, v) => { c.overrides = { ...(c.overrides || {}), [key]: v }; patchClip({ overrides: c.overrides }); updatePreview(); box.querySelector('#ovnote').hidden = false; };
+    box.querySelector('#sSize').addEventListener('input', (e) => { box.querySelector('#sSizeo').textContent = e.target.value + 'px'; set(k + 'Size', +e.target.value); });
+    box.querySelector('#sOn').onchange = (e) => { box.querySelector('#sd').classList.toggle('off', !e.target.checked); set(k + 'OutlineOn', e.target.checked); };
+    box.querySelector('#sCol').addEventListener('input', (e) => set(k + 'OutlineColor', e.target.value));
+    box.querySelector('#sW').addEventListener('input', (e) => { box.querySelector('#sWo').textContent = e.target.value + 'px'; set(k + 'OutlineWidth', +e.target.value); });
   }
 
   function renderSubRows() {

@@ -11,6 +11,7 @@ import * as ai from './ai.js';
 import { chunkSegments } from './subtitles.js';
 import { buildAss, segmentsOf, totalDuration } from './ass.js';
 import * as tpls from './templates.js';
+import { resolveFrame, framePixels, sanitizeFrame, FRAME_LIMITS } from './layout.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -203,12 +204,26 @@ async function runAnalysis(p, opts) {
   if (!picked.length) throw new Error('쇼츠로 만들 구간을 찾지 못했습니다. 길이 범위를 조정해 다시 시도해 보세요.');
 
   p.clips = picked.map((c) => ({
-    id: store.newId(4), ...c, cropX: 0.5, templateId: opts.templateId, subtitleOn: true, titleOn: true, render: { status: 'idle' },
+    id: store.newId(4), ...c, cropX: 0.5, cropY: 0.5, zoom: 1, frame: null, overrides: {}, templateId: opts.templateId, subtitleOn: true, titleOn: true, render: { status: 'idle' },
   }));
   p.status = 'ready';
   p.progress = { step: 'done', pct: 100, message: '완료' };
   store.save(p);
 }
+
+app.post('/api/projects/:id/apply-template', wrap(async (req, res) => {
+  const p = getProject(req);
+  const t = tpls.find(req.body?.templateId);
+  if (!t) throw httpError(400, '알 수 없는 템플릿입니다.');
+  for (const c of p.clips) {
+    if (['queued', 'rendering'].includes(c.render?.status)) continue;
+    if (tpls.resolve(c.templateId).layout !== t.layout) c.frame = null; // 영상 프레임 조정은 레이아웃 기준이라 레이아웃이 바뀌면 초기화
+    c.templateId = t.id;
+    if (c.render?.status === 'done') c.render.stale = true;
+  }
+  store.save(p);
+  res.json(p.clips.map((c) => ({ id: c.id, templateId: c.templateId, frame: c.frame, render: c.render })));
+}));
 
 app.post('/api/projects/:id/reset', wrap(async (req, res) => {
   const p = getProject(req);
@@ -257,6 +272,10 @@ app.patch('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
   if ('description' in b) next.description = String(b.description).slice(0, 2000);
   if ('hashtags' in b && Array.isArray(b.hashtags)) next.hashtags = b.hashtags.map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean).slice(0, 15);
   if ('cropX' in b) next.cropX = Math.min(1, Math.max(0, Number(b.cropX) || 0));
+  if ('cropY' in b) next.cropY = Number.isFinite(Number(b.cropY)) ? Math.min(1, Math.max(0, Number(b.cropY))) : 0.5;
+  if ('zoom' in b) next.zoom = Math.min(FRAME_LIMITS.zoom[1], Math.max(FRAME_LIMITS.zoom[0], Number(b.zoom) || 1));
+  if ('frame' in b) next.frame = sanitizeFrame(b.frame);
+  if ('overrides' in b) next.overrides = tpls.sanitizeOverrides(b.overrides);
   if ('templateId' in b) {
     if (!tpls.find(b.templateId)) throw httpError(400, '알 수 없는 템플릿입니다.');
     next.templateId = b.templateId;
@@ -274,7 +293,7 @@ app.post('/api/projects/:id/clips', wrap(async (req, res) => {
   const start = Math.max(0, Number(req.body?.start) || 0);
   const end = Math.min(p.video.duration, Number(req.body?.end) || start + 30);
   if (end - start < 1) throw httpError(400, '구간이 올바르지 않습니다.');
-  const c = { id: store.newId(4), start, end, segments: [{ start, end, role: 'body' }], summary: '', title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, templateId: p.clips[0]?.templateId || tpls.all()[0].id, subtitleOn: true, titleOn: true, render: { status: 'idle' } };
+  const c = { id: store.newId(4), start, end, segments: [{ start, end, role: 'body' }], summary: '', title: '새 쇼츠', score: 0, reason: '직접 추가한 구간', description: '', hashtags: [], cropX: 0.5, cropY: 0.5, zoom: 1, frame: null, overrides: {}, templateId: p.clips[0]?.templateId || tpls.all()[0].id, subtitleOn: true, titleOn: true, render: { status: 'idle' } };
   p.clips.push(c);
   if (p.status === 'uploaded') p.status = 'ready';
   store.save(p);
@@ -344,11 +363,12 @@ async function renderOne(p, c) {
     const segs = segmentsOf(c);
     const subs = p.subtitles.filter((s) => segs.some((g) => s.end > g.start && s.start < g.end));
     const assFile = path.join(outDir, `${c.id}.ass`);
-    const tpl = tpls.resolve(c.templateId);
+    const tpl = tpls.applyOverrides(tpls.resolve(c.templateId), c.overrides);
+    const fr = resolveFrame(tpl, c);
     fs.writeFileSync(assFile, buildAss({ clip: c, subs, tpl }));
     await ff.renderClip({
       src: path.join(dir, p.video.file), segments: segs,
-      srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, layout: tpl.layout, bgColor: tpl.bgColor, assFile,
+      srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, cropY: c.cropY ?? 0.5, zoom: c.zoom ?? 1, frame: { ...framePixels(fr), bg: fr.bg }, assFile,
       hasAudio: p.video.hasAudio, out: tmpFile,
       onProgress: (f) => { c.render.pct = Math.round(f * 100); },
     });

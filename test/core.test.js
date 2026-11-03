@@ -6,7 +6,8 @@ import { fontById, FONT_CATALOG } from '../server/fonts.js';
 import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider } from '../server/ai.js';
 import { parseWhisperCppJson } from '../server/stt-local.js';
 import { buildVideoFilter } from '../server/ffmpeg.js';
-import { DEFAULTS, sanitize } from '../server/templates.js';
+import { DEFAULTS, sanitize, sanitizeOverrides, applyOverrides } from '../server/templates.js';
+import { resolveFrame, framePixels, cropBox, sanitizeFrame } from '../server/layout.js';
 
 test('자막 분할: 줄당 16자 이하, 시간 보존', () => {
   const out = chunkSegments([{ start: 10, end: 14, text: '이것은 쇼츠에 들어갈 조금 긴 문장입니다 정말로 길어요' }]);
@@ -43,9 +44,10 @@ test('하이라이트 보정: 길이 제한, 겹침 제거, 발화 경계 스냅
   assert.equal(out[0].start, 10);
 });
 
-test('크롭 필터: 16:9 → 9:16, cropX 반영', () => {
-  assert.match(buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 1 }), /^crop=606:1080:1314:0,scale=1080:1920/);
-  assert.match(buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 0 }), /^crop=606:1080:0:0,/);
+test('영상 프레임 필터: 전체화면은 패딩 없이 cropX 반영', () => {
+  const frame = { ...framePixels(resolveFrame(sanitize({}))), bg: '#000000' };
+  assert.match(buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 1, cropY: 0.5, zoom: 1, frame }), /^crop=606:1080:1314:0,scale=1080:1920:flags=lanczos,setsar=1$/);
+  assert.match(buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 0, cropY: 0.5, zoom: 1, frame }), /^crop=606:1080:0:0,/);
 });
 
 test('API 키 없는 대체 로직', () => {
@@ -55,7 +57,9 @@ test('API 키 없는 대체 로직', () => {
 });
 
 test('framed 레이아웃: 정사각 크롭 + 배경색 패딩, 계정명은 하단 바 중앙', () => {
-  const f = buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 0.5, layout: 'framed', bgColor: '#1f6f6a' });
+  const tp = sanitize({ layout: 'framed', bgColor: '#1f6f6a' });
+  const fr = resolveFrame(tp);
+  const f = buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 0.5, cropY: 0.5, zoom: 1, frame: { ...framePixels(fr), bg: fr.bg } });
   assert.match(f, /^crop=1080:1080:420:0,scale=1080:1080.*pad=1080:1920:0:420:color=0x1f6f6a/);
   const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl: sanitize({ layout: 'framed', account: '@a' }) });
   assert.match(ass, /pos\(540,1710\)\}@a/);
@@ -194,4 +198,45 @@ test('ASS: 테두리 색·두께와 배경 박스(별도 레이어)가 반영된
   // 테두리 끔(두께 0), 배경 꺼짐이면 배경 스타일/레이어가 없다
   assert.match(ass, /Style: Sub,[^\n]*,0,0,1,0,0,5,/);
   assert.ok(!ass.includes('SubBg') && !ass.includes('AccountBg'));
+});
+
+test('영상 너비·크기: 프레임 계산(짝수, 가운데, 범위 보정)과 확대/이동 크롭', () => {
+  const tp = sanitize({});
+  // 기본: 전체화면
+  assert.deepEqual(framePixels(resolveFrame(tp)), { fw: 1080, fh: 1920, x0: 0, y0: 0 });
+  // 너비 60%, 높이 40%, 세로 위치 맨 위 요청 → 프레임이 캔버스 안으로 보정되고 가운데 정렬
+  const fr = resolveFrame(tp, { frame: { w: 0.6, h: 0.4, cy: 0 } });
+  const px = framePixels(fr);
+  assert.deepEqual([px.fw, px.fh, px.x0, px.y0], [648, 768, 216, 0]);
+  assert.ok(px.fw % 2 === 0 && px.fh % 2 === 0 && px.x0 % 2 === 0 && px.y0 % 2 === 0);
+  // 범위 밖 값은 한계로 보정
+  const lim = resolveFrame(tp, { frame: { w: 5, h: 0.01, cy: 9 } });
+  assert.deepEqual([lim.w, lim.h], [1, 0.2]);
+  assert.equal(sanitizeFrame({ w: 0.1 }).w, 0.3);
+  assert.equal(sanitizeFrame({}), null);
+  // 프레임 비율에 맞춘 cover 크롭 + 확대 2배 + 이동
+  const full = cropBox({ srcW: 1920, srcH: 1080, fw: 1080, fh: 1920, zoom: 1, cropX: 0.5, cropY: 0.5 });
+  const z2 = cropBox({ srcW: 1920, srcH: 1080, fw: 1080, fh: 1920, zoom: 2, cropX: 1, cropY: 1 });
+  assert.deepEqual([full.cw, full.ch], [606, 1080]);
+  assert.deepEqual([z2.cw, z2.ch], [302, 540]);
+  assert.deepEqual([z2.x, z2.y], [1920 - 302, 1080 - 540]); // 오른쪽 아래 끝
+  // 가로로 넓은 프레임(전체 너비 + 낮은 높이)은 원본을 가로로 채움
+  const wide = cropBox({ srcW: 1920, srcH: 1080, fw: 1080, fh: 608, zoom: 1 });
+  assert.equal(wide.cw / wide.ch > 1.7, true);
+  // 프레임 필터: 작은 프레임은 배경색 패딩이 붙는다
+  const f = buildVideoFilter({ srcW: 1920, srcH: 1080, cropX: 0.5, cropY: 0.5, zoom: 1, frame: { ...px, bg: '#102030' } });
+  assert.match(f, /pad=1080:1920:216:0:color=0x102030/);
+});
+
+test('쇼츠별 텍스트 스타일 덮어쓰기: 허용 항목만 검증해 적용', () => {
+  const o = sanitizeOverrides({ titleSize: 999, subOutlineOn: 0, accountOutlineColor: '#ABCDEF', subOutlineWidth: -3, titleX: 0.9, evil: 1, titleBgOn: true });
+  assert.deepEqual(o, { titleSize: 130, subOutlineOn: false, accountOutlineColor: '#abcdef', subOutlineWidth: 0 });
+  const tp = sanitize({});
+  const eff = applyOverrides(tp, o);
+  assert.equal(eff.titleSize, 130);
+  assert.equal(eff.titleX, tp.titleX); // 위치/배경 등은 덮어쓸 수 없음
+  assert.equal(applyOverrides(tp, {}), tp);
+  assert.equal(applyOverrides(tp, undefined), tp);
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl: eff });
+  assert.match(ass, /Style: Title,[^,]+,130,/);
 });

@@ -9,7 +9,7 @@ import * as store from './store.js';
 import * as ff from './ffmpeg.js';
 import * as ai from './ai.js';
 import { chunkSegments } from './subtitles.js';
-import { buildAss, SUB_TEMPLATES, segmentsOf, totalDuration } from './ass.js';
+import { buildAss, segmentsOf, totalDuration } from './ass.js';
 import * as tpls from './templates.js';
 
 const app = express();
@@ -35,7 +35,7 @@ function getClip(p, cid) {
 // ───────────────────────── 설정 / 목록 ─────────────────────────
 
 app.get('/api/config', (req, res) => {
-  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label, hangulFallback }) => ({ id, label, fallback: hangulFallback || null })), positionDefaults: tpls.POSITION_DEFAULTS, subStyles: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
+  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label, hangulFallback }) => ({ id, label, fallback: hangulFallback || null })), positionDefaults: tpls.POSITION_DEFAULTS, subPresets: tpls.SUB_PRESETS, maxDurationMin: MAX_DURATION_SEC / 60 });
 });
 
 // ───────────────────────── 템플릿 ─────────────────────────

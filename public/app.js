@@ -57,27 +57,31 @@ function paintPhone(phone, tpl, { title = [], sub = '', accountPlaceholder = '' 
   const framed = tpl.layout === 'framed';
   phone.classList.toggle('framed', framed);
   phone.style.background = framed ? tpl.bgColor : '#000';
-  const put = (el, x, y, font, size) => {
+  const rgba = (hex, op) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${op / 100})`; };
+  // 위치·폰트·크기·테두리를 요소에 반영하고, 배경이 켜져 있으면 글자를 박스 span으로 감싼다
+  const put = (el, pre, x, y, font, size, color, html) => {
     el.style.left = `${x * 100}%`; el.style.top = `${y * 100}%`;
     el.style.fontFamily = fontStack(font); el.style.fontSize = `${size / 10.8}cqw`;
+    el.style.color = color;
+    // ASS 테두리는 글자 바깥으로 두께만큼 퍼지므로, 가운데 기준 CSS 선은 두 배로 그린다
+    const w = tpl[`${pre}OutlineOn`] ? tpl[`${pre}OutlineWidth`] : 0;
+    el.style.setProperty('-webkit-text-stroke', w > 0 ? `${(2 * w) / 10.8}cqw ${tpl[`${pre}OutlineColor`]}` : '0');
+    el.innerHTML = tpl[`${pre}BgOn`]
+      ? `<span class="tx" style="background:${rgba(tpl[`${pre}BgColor`], tpl[`${pre}BgOpacity`])};padding:${tpl[`${pre}BgPad`] / 10.8}cqw">${html}</span>`
+      : html;
   };
   const t = phone.querySelector('.ov-title');
-  put(t, tpl.titleX, tpl.titleY, tpl.titleFont, tpl.titleSize);
-  t.style.color = tpl.titleColor1;
   t.hidden = !title.length;
-  t.innerHTML = !title.length ? '' : title.length === 1 ? esc(title[0]) : `${esc(title[0])}\n<b style="color:${esc(tpl.titleColor2)}">${esc(title[1])}</b>`;
+  put(t, 'title', tpl.titleX, tpl.titleY, tpl.titleFont, tpl.titleSize, tpl.titleColor1,
+    !title.length ? '' : title.length === 1 ? esc(title[0]) : `${esc(title[0])}\n<b style="color:${esc(tpl.titleColor2)}">${esc(title[1])}</b>`);
   const s = phone.querySelector('.ov-sub');
-  put(s, tpl.subX, tpl.subY, tpl.subFont, tpl.subSize);
-  s.className = `ov ov-sub ${tpl.subStyle}`;
   s.hidden = !sub;
-  s.innerHTML = sub ? `<span>${esc(sub)}</span>` : '';
+  put(s, 'sub', tpl.subX, tpl.subY, tpl.subFont, tpl.subSize, tpl.subColor, sub ? esc(sub) : '');
   const a = phone.querySelector('.ov-acc');
-  put(a, tpl.accountX, tpl.accountY, tpl.accountFont, tpl.accountSize);
-  a.style.color = tpl.accountColor;
   const accText = tpl.account || accountPlaceholder;
-  a.className = `ov ov-acc${tpl.accountOutline ? '' : ' noline'}${!tpl.account && accountPlaceholder ? ' ph' : ''}`;
   a.hidden = !accText;
-  a.textContent = accText;
+  put(a, 'account', tpl.accountX, tpl.accountY, tpl.accountFont, tpl.accountSize, tpl.accountColor, esc(accText));
+  a.classList.toggle('ph', !tpl.account && !!accountPlaceholder);
 }
 
 // ───────────────────────── 라우터 ─────────────────────────
@@ -597,9 +601,9 @@ function editorPage(p, templates) {
 // ───────────────────────── 템플릿 설정 ─────────────────────────
 
 const EL_META = {
-  title: { label: '제목', node: '.ov-title', x: 'titleX', y: 'titleY', font: 'titleFont', size: 'titleSize', min: 40, max: 130 },
-  sub: { label: '자막', node: '.ov-sub', x: 'subX', y: 'subY', font: 'subFont', size: 'subSize', min: 36, max: 110 },
-  account: { label: '계정명', node: '.ov-acc', x: 'accountX', y: 'accountY', font: 'accountFont', size: 'accountSize', min: 24, max: 110 },
+  title: { pre: 'title', label: '제목', node: '.ov-title', x: 'titleX', y: 'titleY', font: 'titleFont', size: 'titleSize', min: 40, max: 130 },
+  sub: { pre: 'sub', label: '자막', node: '.ov-sub', x: 'subX', y: 'subY', font: 'subFont', size: 'subSize', min: 36, max: 110 },
+  account: { pre: 'account', label: '계정명', node: '.ov-acc', x: 'accountX', y: 'accountY', font: 'accountFont', size: 'accountSize', min: 24, max: 110 },
 };
 
 async function templatesPage() {
@@ -654,7 +658,7 @@ async function templatesPage() {
       d.layout = v;
       const pd = config.positionDefaults[v];
       [d.titleX, d.titleY] = pd.title; [d.subX, d.subY] = pd.sub; [d.accountX, d.accountY] = pd.account;
-      d.accountOutline = v === 'full';
+      d.accountOutlineOn = v === 'full';
       f.querySelectorAll('#layout button').forEach((b) => b.classList.toggle('on', b.dataset.k === v));
       f.querySelector('#bgrow').style.display = v === 'framed' ? '' : 'none';
       touch(); renderPanel();
@@ -684,7 +688,7 @@ async function templatesPage() {
 
   // 선택한 요소의 속성 패널
   function renderPanel() {
-    const m = EL_META[selEl]; const box = $('#elpanel');
+    const m = EL_META[selEl]; const pre = m.pre; const box = $('#elpanel');
     const slider = (id, label, min, max, step, val, unit = '') => `<div class="slider"><label>${label}</label><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}"><output id="${id}o">${val}${unit}</output></div>`;
     const color = (id, label, val) => `<div class="colorrow"><input type="color" id="${id}" value="${val}"><span class="meta">${label}</span></div>`;
     const fonts = config.fonts || [];
@@ -692,8 +696,12 @@ async function templatesPage() {
       <div class="field"><label>${m.label} 폰트</label><div class="fontgrid" id="fonts">${fonts.map((f) => `<button class="fontchip ${d[m.font] === f.id ? 'on' : ''}" data-id="${f.id}" style="font-family:${fontStack(f.id)}"><span>가나다 쇼츠 Abc</span><small>${esc(f.label)}</small></button>`).join('')}</div></div>
       ${slider('size', '크기', m.min, m.max, 1, d[m.size])}
       ${selEl === 'title' ? `<div class="two">${color('c1', '첫째 줄 색', d.titleColor1)}${color('c2', '둘째 줄 색', d.titleColor2)}</div>` : ''}
-      ${selEl === 'sub' ? `<div class="field"><label>자막 스타일</label><div class="seg" id="substyle">${Object.entries(config.subStyles || {}).map(([k, v]) => `<button data-k="${k}" class="${d.subStyle === k ? 'on' : ''}">${esc(v)}</button>`).join('')}</div></div>` : ''}
-      ${selEl === 'account' ? `<div class="two">${color('c3', '글자 색', d.accountColor)}<label class="toggle" style="gap:10px;justify-content:flex-start"><input type="checkbox" id="outline" ${d.accountOutline ? 'checked' : ''}><span class="meta">검은 외곽선</span></label></div>` : ''}
+      ${selEl === 'sub' ? `${color('c4', '글자 색', d.subColor)}<div class="field"><label>빠른 선택</label><div class="presets" id="presets">${Object.entries(config.subPresets || {}).map(([k, v]) => `<button class="btn sm" data-k="${k}">${esc(v.label)}</button>`).join('')}</div></div>` : ''}
+      ${selEl === 'account' ? color('c3', '글자 색', d.accountColor) : ''}
+      <div class="decor ${d[pre + 'OutlineOn'] ? '' : 'off'}" id="d-outline"><label class="toggle"><span>테두리</span><input type="checkbox" id="olOn" ${d[pre + 'OutlineOn'] ? 'checked' : ''}></label>
+        <div class="opts">${color('olColor', '테두리 색', d[pre + 'OutlineColor'])}${slider('olWidth', '두께', 1, 24, 1, d[pre + 'OutlineWidth'], 'px')}</div></div>
+      <div class="decor ${d[pre + 'BgOn'] ? '' : 'off'}" id="d-bg"><label class="toggle"><span>배경 박스</span><input type="checkbox" id="bgOn" ${d[pre + 'BgOn'] ? 'checked' : ''}></label>
+        <div class="opts">${color('bgColor2', '배경 색', d[pre + 'BgColor'])}${slider('bgOpacity', '불투명도', 0, 100, 1, d[pre + 'BgOpacity'], '%')}${slider('bgPad', '여백', 0, 60, 1, d[pre + 'BgPad'], 'px')}</div></div>
       <div class="field"><label>위치 (미리보기에서 끌어도 돼요)</label>
         ${slider('px', '가로', 0, 100, 0.5, Math.round(d[m.x] * 200) / 2, '%')}
         ${slider('py', '세로', 0, 100, 0.5, Math.round(d[m.y] * 200) / 2, '%')}
@@ -706,9 +714,21 @@ async function templatesPage() {
     box.querySelector('#c1')?.addEventListener('input', (e) => { d.titleColor1 = e.target.value; touch(); });
     box.querySelector('#c2')?.addEventListener('input', (e) => { d.titleColor2 = e.target.value; touch(); });
     box.querySelector('#c3')?.addEventListener('input', (e) => { d.accountColor = e.target.value; touch(); });
-    box.querySelector('#outline')?.addEventListener('change', (e) => { d.accountOutline = e.target.checked; touch(); });
-    box.querySelector('#substyle')?.addEventListener('click', (e) => {
-      const k = e.target.dataset.k; if (!k) return; d.subStyle = k; box.querySelectorAll('#substyle button').forEach((b) => b.classList.toggle('on', b.dataset.k === k)); touch();
+    box.querySelector('#c4')?.addEventListener('input', (e) => { d.subColor = e.target.value; touch(); });
+    // 테두리 / 배경
+    const bind = (id, key, fmt) => box.querySelector('#' + id).addEventListener('input', (e) => {
+      d[pre + key] = e.target.type === 'range' ? +e.target.value : e.target.value;
+      const o = box.querySelector(`#${id}o`); if (o) o.textContent = e.target.value + fmt;
+      touch();
+    });
+    bind('olColor', 'OutlineColor', ''); bind('olWidth', 'OutlineWidth', 'px');
+    bind('bgColor2', 'BgColor', ''); bind('bgOpacity', 'BgOpacity', '%'); bind('bgPad', 'BgPad', 'px');
+    box.querySelector('#olOn').onchange = (e) => { d[pre + 'OutlineOn'] = e.target.checked; box.querySelector('#d-outline').classList.toggle('off', !e.target.checked); touch(); };
+    box.querySelector('#bgOn').onchange = (e) => { d[pre + 'BgOn'] = e.target.checked; box.querySelector('#d-bg').classList.toggle('off', !e.target.checked); touch(); };
+    box.querySelector('#presets')?.addEventListener('click', (e) => {
+      const p = config.subPresets?.[e.target.dataset?.k]; if (!p) return;
+      Object.assign(d, { subColor: p.color, subOutlineOn: p.outlineOn, subOutlineColor: p.outlineColor, subOutlineWidth: p.outlineWidth, subBgOn: p.bgOn, subBgColor: p.bgColor, subBgOpacity: p.bgOpacity, subBgPad: p.bgPad });
+      renderPanel(); touch();
     });
     box.querySelector('#px').oninput = (e) => { d[m.x] = e.target.value / 100; box.querySelector('#pxo').textContent = `${e.target.value}%`; touch(); };
     box.querySelector('#py').oninput = (e) => { d[m.y] = e.target.value / 100; box.querySelector('#pyo').textContent = `${e.target.value}%`; touch(); };

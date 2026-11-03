@@ -29,6 +29,20 @@ npm start              # http://localhost:3000
 - `ANTHROPIC_API_KEY` — 없으면 발화 밀도 기반 단순 규칙으로 하이라이트를 선정(품질 낮음)
 - API 키 없이 UI/렌더링만 확인: `MOCK_AI=1 npm start` (가짜 자막·균등 분할 구간)
 
+## 터미널을 닫아도 계속 실행 (macOS)
+
+```bash
+npm run service:install     # 등록: 백그라운드 실행 + 로그인 시 자동 시작 + 비정상 종료 시 재시작
+npm run service:status      # 상태 확인
+npm run service:logs        # 로그 보기 (Ctrl+C로 종료)
+npm run service:uninstall   # 해제
+```
+
+- 등록 후 http://localhost:3000 이 항상 열립니다. 실행 중이던 `npm start`는 먼저 `Ctrl+C`로 끄세요(포트 충돌).
+- 키 없이 데모로 등록: `MOCK_AI=1 npm run service:install`. `.env`의 키를 바꾸면 `npm run service:install`을 다시 실행하세요.
+- 코드를 업데이트(`git pull`)한 뒤에도 `npm run service:install`을 다시 실행하면 새 코드로 재시작됩니다.
+- 로그는 `~/Library/Logs/jiyoungcut.log`에 저장됩니다.
+
 ## 구조
 
 ```

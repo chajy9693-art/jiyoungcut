@@ -207,12 +207,23 @@ async function runAnalysis(p, opts) {
     if (MOCK_AI) p.cuts.fillers = mockCuts(p.video.duration).fillers;
   } catch (e) { console.error('무음 분석 실패:', e.message); p.cuts = null; }
 
-  set('highlight', 70, 'AI가 하이라이트 구간을 고르는 중');
-  const raw = MOCK_AI
-    ? ai.mockHighlights({ duration: p.video.duration, ...opts })
-    : await ai.pickHighlights({ transcript, duration: p.video.duration, title: p.name, ...opts });
-  const picked = ai.normalizeClips(raw, { transcript, duration: p.video.duration, ...opts });
+  // 1단계: 영상 전체 맥락 → 소주제, 2단계: 소주제마다 쇼츠 1개를 컷편집 (구성 이유·피드백 포함)
+  set('topics', 70, 'AI가 영상 전체 맥락을 읽고 소주제를 나누는 중');
+  let topics = []; let chosen = null; let rawClips;
+  if (MOCK_AI) {
+    topics = ai.mockTopics(p.video.duration, opts.count);
+    chosen = topics;
+    rawClips = ai.mockHighlights({ topics, ...opts });
+  } else {
+    const r = await ai.pickHighlights({
+      transcript, duration: p.video.duration, title: p.name, ...opts,
+      onStage: (stage, info) => { if (stage === 'compose') set('compose', 80, `소주제 ${info.topics}개 확인 · ${info.shorts}개 소주제를 컷편집하는 중`); },
+    });
+    ({ topics, chosen } = r); rawClips = r.clips;
+  }
+  const picked = ai.normalizeClips(rawClips, { transcript, duration: p.video.duration, topics: chosen, ...opts });
   if (!picked.length) throw new Error('쇼츠로 만들 구간을 찾지 못했습니다. 길이 범위를 조정해 다시 시도해 보세요.');
+  p.topics = topics.map((t) => ({ ...t, used: picked.some((c) => c.topicId === t.id) }));
 
   p.clips = picked.map((c) => ({
     id: store.newId(4), ...c, cropX: 0.5, cropY: 0.5, zoom: 1, frame: null, overrides: {}, tighten: p.cuts ? { ...TIGHTEN_DEFAULTS } : null, templateId: opts.templateId, subtitleOn: true, titleOn: true, render: { status: 'idle' },
@@ -232,6 +243,27 @@ app.post('/api/projects/:id/detect-cuts', wrap(async (req, res) => {
   if (MOCK_AI) p.cuts.fillers = mockCuts(p.video.duration).fillers;
   store.save(p);
   res.json(p.cuts);
+}));
+
+// 지금 편집 상태(직접 고친 내용 포함)를 보고 '왜 이렇게 편집했는지 + 의견·피드백'을 다시 쓴다
+app.post('/api/projects/:id/clips/:cid/note', wrap(async (req, res) => {
+  const p = getProject(req);
+  const c = getClip(p, req.params.cid);
+  const segs = segmentsOf(c);
+  const eff = effectiveSegments(segs, p.cuts, c.tighten);
+  const parts = segs.map((g) => ({
+    role: g.role || 'body', start: g.start, end: g.end, note: g.note || '',
+    text: p.subtitles.filter((x) => x.end > g.start && x.start < g.end).map((x) => x.text).join(' ').slice(0, 300),
+  }));
+  let note;
+  try {
+    note = await ai.writeEditNote({ videoTitle: p.name, clip: { title: c.title, topic: c.topic, removed: totalDuration(segs) - totalDuration(eff) }, parts });
+  } catch (e) {
+    throw httpError(e.message.includes('ANTHROPIC_API_KEY') ? 400 : 502, e.message);
+  }
+  c.rationale = note.rationale; c.feedback = note.feedback;
+  store.save(p);
+  res.json(note);
 }));
 
 app.post('/api/projects/:id/apply-template', wrap(async (req, res) => {
@@ -254,7 +286,7 @@ app.post('/api/projects/:id/reset', wrap(async (req, res) => {
   const p = getProject(req);
   if (p.status === 'analyzing' || p.clips.some((c) => ['queued', 'rendering'].includes(c.render?.status))) throw httpError(409, '작업이 진행 중입니다.');
   fs.rmSync(path.join(store.projectDir(p.id), 'out'), { recursive: true, force: true });
-  Object.assign(p, { status: 'uploaded', clips: [], subtitles: [], transcript: [], error: null, progress: null });
+  Object.assign(p, { status: 'uploaded', clips: [], topics: [], subtitles: [], transcript: [], error: null, progress: null });
   store.save(p);
   res.json({ ok: true });
 }));
@@ -268,6 +300,7 @@ function validateSegments(input, duration) {
     start: Math.round(Number(x.start) * 100) / 100,
     end: Math.min(duration, Math.round(Number(x.end) * 100) / 100),
     role: ['hook', 'body', 'ending'].includes(x.role) ? x.role : 'body',
+    ...(x.note ? { note: String(x.note).slice(0, 80) } : {}),
   }));
   if (!segs.every((x) => x.start >= 0 && x.end - x.start >= 0.5)) throw httpError(400, '구간이 올바르지 않습니다. (구간당 최소 0.5초, 영상 길이 이내)');
   const sorted = [...segs].sort((a, b) => a.start - b.start);

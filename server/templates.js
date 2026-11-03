@@ -3,6 +3,7 @@ import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { newId } from './store.js';
 import { isFontId, DEFAULT_FONT_ID } from './fonts.js';
+import { FRAME_DEFAULTS, FRAME_LIMITS } from './layout.js';
 
 const FILE = path.join(DATA_DIR, 'templates.json');
 
@@ -49,6 +50,7 @@ const hex = (v, d) => (/^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : d);
 const num = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 const frac = (v, d) => { const n = Number(v); return v == null || !Number.isFinite(n) ? d : Math.round(Math.min(1, Math.max(0, n)) * 1000) / 1000; };
 const bool = (v, d) => (v == null ? d : !!v);
+const rng = (v, lo, hi, d) => { const n = Number(v); return v == null || !Number.isFinite(n) ? d : Math.round(Math.min(hi, Math.max(lo, n)) * 1000) / 1000; };
 
 export function sanitize(input = {}, base = DEFAULTS) {
   // 구버전 템플릿 호환: subStyle 프리셋 → 자막 색/테두리/배경 값, accountOutline → accountOutlineOn
@@ -60,11 +62,17 @@ export function sanitize(input = {}, base = DEFAULTS) {
   const i = { ...base, ...input, ...legacy };
   const layout = i.layout === 'framed' ? 'framed' : 'full';
   const pd = POSITION_DEFAULTS[layout];
+  const fd = FRAME_DEFAULTS[layout];
+  const frameH = rng(i.frameH, ...FRAME_LIMITS.h, fd.h);
   const out = {
     name: String(i.name ?? base.name).trim().slice(0, 30) || base.name,
     account: String(i.account ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 40),
     layout,
     bgColor: hex(i.bgColor, base.bgColor),
+    // 영상 크기: 너비/높이/세로 위치 (캔버스 대비 비율). 레이아웃 기본값에서 시작
+    frameW: rng(i.frameW, ...FRAME_LIMITS.w, fd.w),
+    frameH,
+    frameCy: rng(i.frameCy, frameH / 2, 1 - frameH / 2, fd.cy),
     titleFont: isFontId(i.titleFont) ? i.titleFont : DEFAULT_FONT_ID,
     titleSize: num(i.titleSize, 40, 130, base.titleSize),
     titleColor1: hex(i.titleColor1, base.titleColor1),

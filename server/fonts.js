@@ -16,6 +16,9 @@ export const FONT_CATALOG = [
   { id: 'gaegu', label: '개구체', family: 'Gaegu', bold: -1, file: 'Gaegu_700Bold.ttf' },
   { id: 'nanum-myeongjo', label: '나눔명조 (명조체)', family: 'NanumMyeongjoExtraBold', bold: 0, file: 'NanumMyeongjo_800ExtraBold.ttf' },
   { id: 'nanum-pen', label: '나눔손글씨 펜', family: 'Nanum Pen', bold: 0, file: 'NanumPenScript_400Regular.ttf' },
+  // 한글 글리프가 없는 폰트: 영문·숫자만 이 폰트로, 한글은 hangulFallback 폰트로 고정한다.
+  // 라이선스상 저장소에 포함하지 않으며(.gitignore), 파일을 fonts/ 에 직접 넣었을 때만 목록에 나타난다.
+  { id: 'notion-hand', label: 'NotionHand (영문·숫자 / 한글은 Pretendard)', family: 'NotionHand Community', bold: 0, file: 'NotionHand_Community.ttf', hangulFallback: 'pretendard-bold' },
 ];
 
 export const DEFAULT_FONT_ID = FONT_CATALOG[0].id;

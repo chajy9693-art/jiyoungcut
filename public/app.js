@@ -41,6 +41,12 @@ function titleLines(t) {
   return [t.slice(0, best).trim(), t.slice(best + 1).trim()];
 }
 
+/** CSS font-family 스택: 한글 글리프가 없는 폰트는 폴백 폰트를 뒤에 붙인다 */
+const fontStack = (id) => {
+  const f = (config.fonts || []).find((x) => x.id === id);
+  return `'jy-${id}'${f?.fallback ? `, 'jy-${f.fallback}'` : ''}, sans-serif`;
+};
+
 const PHONE_HTML = '<div class="vwrap"></div><div class="ov ov-title"></div><div class="ov ov-sub"></div><div class="ov ov-acc"></div><div class="gv"></div><div class="gh"></div>';
 
 /**
@@ -53,7 +59,7 @@ function paintPhone(phone, tpl, { title = [], sub = '', accountPlaceholder = '' 
   phone.style.background = framed ? tpl.bgColor : '#000';
   const put = (el, x, y, font, size) => {
     el.style.left = `${x * 100}%`; el.style.top = `${y * 100}%`;
-    el.style.fontFamily = `'jy-${font}', sans-serif`; el.style.fontSize = `${size / 10.8}cqw`;
+    el.style.fontFamily = fontStack(font); el.style.fontSize = `${size / 10.8}cqw`;
   };
   const t = phone.querySelector('.ov-title');
   put(t, tpl.titleX, tpl.titleY, tpl.titleFont, tpl.titleSize);
@@ -683,7 +689,7 @@ async function templatesPage() {
     const color = (id, label, val) => `<div class="colorrow"><input type="color" id="${id}" value="${val}"><span class="meta">${label}</span></div>`;
     const fonts = config.fonts || [];
     box.innerHTML = `
-      <div class="field"><label>${m.label} 폰트</label><div class="fontgrid" id="fonts">${fonts.map((f) => `<button class="fontchip ${d[m.font] === f.id ? 'on' : ''}" data-id="${f.id}" style="font-family:'jy-${f.id}'"><span>가나다 쇼츠 Abc</span><small>${esc(f.label)}</small></button>`).join('')}</div></div>
+      <div class="field"><label>${m.label} 폰트</label><div class="fontgrid" id="fonts">${fonts.map((f) => `<button class="fontchip ${d[m.font] === f.id ? 'on' : ''}" data-id="${f.id}" style="font-family:${fontStack(f.id)}"><span>가나다 쇼츠 Abc</span><small>${esc(f.label)}</small></button>`).join('')}</div></div>
       ${slider('size', '크기', m.min, m.max, 1, d[m.size])}
       ${selEl === 'title' ? `<div class="two">${color('c1', '첫째 줄 색', d.titleColor1)}${color('c2', '둘째 줄 색', d.titleColor2)}</div>` : ''}
       ${selEl === 'sub' ? `<div class="field"><label>자막 스타일</label><div class="seg" id="substyle">${Object.entries(config.subStyles || {}).map(([k, v]) => `<button data-k="${k}" class="${d.subStyle === k ? 'on' : ''}">${esc(v)}</button>`).join('')}</div></div>` : ''}

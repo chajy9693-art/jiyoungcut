@@ -35,7 +35,7 @@ function getClip(p, cid) {
 // ───────────────────────── 설정 / 목록 ─────────────────────────
 
 app.get('/api/config', (req, res) => {
-  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label }) => ({ id, label })), positionDefaults: tpls.POSITION_DEFAULTS, subStyles: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
+  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label, hangulFallback }) => ({ id, label, fallback: hangulFallback || null })), positionDefaults: tpls.POSITION_DEFAULTS, subStyles: Object.fromEntries(Object.entries(SUB_TEMPLATES).map(([k, v]) => [k, v.label])), maxDurationMin: MAX_DURATION_SEC / 60 });
 });
 
 // ───────────────────────── 템플릿 ─────────────────────────

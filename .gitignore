@@ -2,3 +2,5 @@ node_modules/
 data/
 .env
 *.log
+# 라이선스상 저장소에 올리지 않는 폰트 (내 컴퓨터의 fonts/ 에만 둠)
+fonts/NotionHand*

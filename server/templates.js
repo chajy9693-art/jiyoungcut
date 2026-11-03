@@ -96,6 +96,22 @@ export function sanitize(input = {}, base = DEFAULTS) {
   return out;
 }
 
+// 쇼츠 하나에서만 템플릿 값을 덮어쓸 수 있는 항목: 요소별 크기와 테두리
+const SIZE_RANGE = { title: [40, 130], sub: [36, 110], account: [24, 110] };
+
+export function sanitizeOverrides(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const el of ELEMENTS) {
+    if (input[`${el}Size`] != null) out[`${el}Size`] = num(input[`${el}Size`], ...SIZE_RANGE[el], DEFAULTS[`${el}Size`]);
+    if (input[`${el}OutlineOn`] != null) out[`${el}OutlineOn`] = !!input[`${el}OutlineOn`];
+    if (/^#[0-9a-fA-F]{6}$/.test(input[`${el}OutlineColor`])) out[`${el}OutlineColor`] = input[`${el}OutlineColor`].toLowerCase();
+    if (input[`${el}OutlineWidth`] != null) out[`${el}OutlineWidth`] = num(input[`${el}OutlineWidth`], 0, 24, DECOR[el].OutlineWidth);
+  }
+  return out;
+}
+export const applyOverrides = (tpl, overrides) => (overrides && Object.keys(overrides).length ? { ...tpl, ...overrides } : tpl);
+
 let list = load();
 
 function load() {

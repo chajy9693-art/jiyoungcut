@@ -45,6 +45,16 @@ export function timelineSubs(segs, subs) {
   return out;
 }
 
+const HANGUL = /[\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uAC00-\uD7FF]+/g;
+const boldTag = (f) => (f.bold === -1 ? 1 : 0);
+
+/** 한글이 없는 폰트는 한글 구간만 폴백 폰트로 바꿔 시스템 대체 폰트에 맡기지 않는다 */
+export function withHangulFallback(escaped, font) {
+  if (!font.hangulFallback) return escaped;
+  const fb = fontById(font.hangulFallback);
+  return escaped.replace(HANGUL, (m) => `{\\fn${fb.family}\\b${boldTag(fb)}}${m}{\\fn${font.family}\\b${boldTag(font)}}`);
+}
+
 const esc = (t) => String(t).replace(/\\/g, '＼').replace(/[{}]/g, '').replace(/\r?\n/g, '\\N');
 
 /**
@@ -73,17 +83,18 @@ export function buildAss({ clip, subs, tpl }) {
   if (clip.titleOn !== false) {
     const t = splitTitle(clip.title);
     if (t.length) {
-      const text = t.length === 1 ? esc(t[0]) : `${esc(t[0])}\\N{\\c${hexToAss(tpl.titleColor2)}&}${esc(t[1])}`;
+      const f = (x) => withHangulFallback(esc(x), fTitle);
+      const text = t.length === 1 ? f(t[0]) : `${f(t[0])}\\N{\\c${hexToAss(tpl.titleColor2)}&}${f(t[1])}`;
       lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Title,,0,0,0,,${at(tpl.titleX, tpl.titleY)}${text}`);
     }
   }
   if (tpl.account) {
-    lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Account,,0,0,0,,${at(tpl.accountX, tpl.accountY)}${esc(tpl.account)}`);
+    lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Account,,0,0,0,,${at(tpl.accountX, tpl.accountY)}${withHangulFallback(esc(tpl.account), fAcc)}`);
   }
   if (clip.subtitleOn !== false) {
     const p = at(tpl.subX, tpl.subY);
     for (const s of timelineSubs(segs, subs)) {
-      lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,${p}${esc(s.text)}`);
+      lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,${p}${withHangulFallback(esc(s.text), fSub)}`);
     }
   }
   return lines.join('\n') + '\n';

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chunkSegments, splitTitle } from '../server/subtitles.js';
-import { buildAss, assTime, timelineSubs } from '../server/ass.js';
+import { buildAss, assTime, timelineSubs, withHangulFallback } from '../server/ass.js';
+import { fontById, FONT_CATALOG } from '../server/fonts.js';
 import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider } from '../server/ai.js';
 import { parseWhisperCppJson } from '../server/stt-local.js';
 import { buildVideoFilter } from '../server/ffmpeg.js';
@@ -151,4 +152,14 @@ test('ASS: 요소별 폰트와 위치가 반영된다', () => {
   assert.match(ass, /Style: Sub,NanumMyeongjoExtraBold,80,/);
   assert.match(ass, /Style: Account,Jua,52,.*,1,0,0,5,/);
   assert.match(ass, /Title,,0,0,0,,\{\\an5\\pos\(270,576\)\}제목/);
+});
+
+test('한글 글리프가 없는 폰트는 한글 구간만 폴백 폰트로 지정', () => {
+  const nh = fontById('notion-hand');
+  assert.equal(withHangulFallback('ABC 노션 123', nh), 'ABC {\\fnPretendard\\b1}노션{\\fnNotionHand Community\\b0} 123');
+  assert.equal(withHangulFallback('가나', fontById('jua')), '가나'); // 폴백 없는 폰트는 그대로
+  const tpl = sanitize({ titleFont: 'notion-hand', account: '@jy노션' });
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '노션 Tips' }, subs: [], tpl });
+  assert.match(ass, /\{\\fnPretendard\\b1\}노션\{\\fnNotionHand Community\\b0\} Tips/);
+  assert.ok(FONT_CATALOG.every((f) => !f.hangulFallback || FONT_CATALOG.some((x) => x.id === f.hangulFallback)));
 });

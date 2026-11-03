@@ -291,7 +291,6 @@ function editorPage(p, templates) {
   const tplOf = (c) => templates.find((t) => t.id === c.templateId) || templates[0];
   // 쇼츠별 덮어쓰기(크기/테두리)를 반영한 실제 적용 템플릿
   const effTpl = (c) => ({ ...tplOf(c), ...(c.overrides || {}) });
-  const EL_STY = { title: { label: '제목', min: 40, max: 130 }, sub: { label: '자막', min: 36, max: 110 }, account: { label: '계정명', min: 24, max: 110 } };
 
   $app.innerHTML = '';
   const root = el(`<div class="editor">
@@ -397,6 +396,7 @@ function editorPage(p, templates) {
     placeVideo(c, fr);
     const s = c.subtitleOn ? subsIn(c).find((x) => S.t >= x.start && S.t < x.end) : null;
     paintPhone(phone, tpl, { title: c.titleOn ? titleLines(c.title) : [], sub: s?.text || '', frame: fr });
+    for (const [k, m] of Object.entries(EL_META)) phone.querySelector(m.node)?.classList.toggle('sel', k === S.styEl);
     const E = eff(c);
     const idx = Math.min(E.length - 1, S.playing ? S.cur : Math.max(0, segIdxOf(c, S.t)));
     const g = E[idx];
@@ -434,9 +434,33 @@ function editorPage(p, templates) {
   };
 
   // 영상 이동(드래그): 확대했거나 프레임보다 영상이 클 때 가로/세로로 움직인다
-  let drag = null;
-  phone.addEventListener('pointerdown', (e) => { const c = clip(); drag = { x: e.clientX, y: e.clientY, cx: c.cropX, cy: c.cropY ?? 0.5 }; phone.setPointerCapture(e.pointerId); });
+  // 미리보기에서 텍스트(제목/자막/계정명)를 끌면 그 요소의 위치가, 그 밖을 끌면 영상이 움직인다
+  phone.classList.add('textedit');
+  let drag = null; let tdrag = null;
+  const guides = (gv, gh) => { phone.querySelector('.gv').style.display = gv ? 'block' : 'none'; phone.querySelector('.gh').style.display = gh ? 'block' : 'none'; };
+  phone.addEventListener('pointerdown', (e) => {
+    const node = e.target.closest('.ov');
+    const key = node && Object.keys(EL_META).find((k) => node.matches(EL_META[k].node));
+    if (key) {
+      if (key !== S.styEl) chooseStyEl(key);
+      const m = EL_META[key]; const tp = effTpl(clip()); const r = phone.getBoundingClientRect();
+      tdrag = { m, r, px: (e.clientX - r.left) / r.width, py: (e.clientY - r.top) / r.height, x: tp[m.x], y: tp[m.y] };
+      phone.setPointerCapture(e.pointerId); return;
+    }
+    const c = clip(); drag = { x: e.clientX, y: e.clientY, cx: c.cropX, cy: c.cropY ?? 0.5 }; phone.setPointerCapture(e.pointerId);
+  });
   phone.addEventListener('pointermove', (e) => {
+    if (tdrag) {
+      const { m, r } = tdrag;
+      let nx = clampN(tdrag.x + ((e.clientX - r.left) / r.width - tdrag.px), 0.02, 0.98, 0.5);
+      let ny = clampN(tdrag.y + ((e.clientY - r.top) / r.height - tdrag.py), 0.02, 0.98, 0.5);
+      const sx = Math.abs(nx - 0.5) < 0.015; const sy = Math.abs(ny - 0.5) < 0.012; // 가운데에 가까우면 자동 정렬
+      if (sx) nx = 0.5; if (sy) ny = 0.5;
+      guides(sx, sy);
+      applyOv({ [m.x]: Math.round(nx * 1000) / 1000, [m.y]: Math.round(ny * 1000) / 1000 });
+      styApi?.syncPos();
+      return;
+    }
     if (!drag) return;
     const c = clip(); const fr = resolveFrame(effTpl(c), c);
     const { wPct, hPct } = placeVideo(c, fr);
@@ -446,7 +470,7 @@ function editorPage(p, templates) {
     if (slackY > 1) c.cropY = clampN(drag.cy - (e.clientY - drag.y) / slackY, 0, 1, 0.5);
     updatePreview(); syncFrameInputs();
   });
-  const endDrag = () => { if (drag) { drag = null; patchClip({ cropX: clip().cropX, cropY: clip().cropY ?? 0.5 }); } };
+  const endDrag = () => { guides(false, false); tdrag = null; if (drag) { drag = null; patchClip({ cropX: clip().cropX, cropY: clip().cropY ?? 0.5 }); } };
   phone.addEventListener('pointerup', endDrag); phone.addEventListener('pointercancel', endDrag);
 
   // ── 타임라인 (선택한 구간 중심) ──
@@ -657,8 +681,8 @@ function editorPage(p, templates) {
         ${sliderHTML('cx', '가로 이동', 0, 100, 1, Math.round(c.cropX * 100), '%')}
         ${sliderHTML('cy2', '세로 이동', 0, 100, 1, Math.round((c.cropY ?? 0.5) * 100), '%')}
         <div class="meta">영상의 너비·높이·위치와 확대/이동을 조정해요. 미리보기를 끌어서 옮길 수도 있어요.</div></div>
-      <div class="sect"><h4>텍스트 스타일 <span class="meta">(이 영상만)</span> <button class="btn sm" id="styReset">초기화</button></h4>
-        <div class="eltabs" id="styTabs">${Object.entries(EL_STY).map(([k, m]) => `<button data-k="${k}" class="${k === S.styEl ? 'on' : ''}">${m.label}</button>`).join('')}</div>
+      <div class="sect"><h4>텍스트 편집 <span class="meta">(이 영상만 · 템플릿과 같은 항목)</span> <button class="btn sm" id="styReset">전체 초기화</button></h4>
+        <div class="eltabs" id="styTabs">${Object.entries(EL_META).map(([k, m]) => `<button data-k="${k}" class="${k === S.styEl ? 'on' : ''}">${m.label}</button>`).join('')}</div>
         <div id="stypanel" class="formgrid"></div></div>
       <div class="sect"><h4>자막</h4>
         <label class="toggle"><span>자막 표시</span><input type="checkbox" id="subOn" ${c.subtitleOn ? 'checked' : ''}></label>
@@ -708,7 +732,7 @@ function editorPage(p, templates) {
     };
 
     // 텍스트 스타일(이 영상만): 요소별 크기·테두리
-    q('#styTabs').onclick = (e) => { const k = e.target.dataset.k; if (!k) return; S.styEl = k; q('#styTabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === k)); renderStyPanel(); };
+    q('#styTabs').onclick = (e) => { const k = e.target.dataset.k; if (k) chooseStyEl(k); };
     q('#styReset').onclick = () => { c.overrides = {}; patchClip({ overrides: {} }); updatePreview(); renderStyPanel(); };
     renderStyPanel();
     q('#desc').oninput = (e) => patchClip({ description: e.target.value });
@@ -732,20 +756,42 @@ function editorPage(p, templates) {
     renderSubRows(); renderRender();
   }
 
+  // ── 텍스트 편집(이 영상만): 템플릿 설정과 같은 패널, 값은 템플릿 위에 덮어쓰기(overrides)로 저장 ──
+  let styApi = null;
+  function applyOv(patch) {
+    const c = clip(); c.overrides = { ...(c.overrides || {}), ...patch };
+    patchClip({ overrides: c.overrides }); updatePreview(); refreshOvNote();
+  }
+  function refreshOvNote() {
+    const c = clip(); const k = S.styEl; const m = EL_META[k]; const box = root.querySelector('#ovnote'); if (!box) return;
+    const mine = Object.keys(c.overrides || {}).some((x) => x.startsWith(k));
+    box.innerHTML = mine
+      ? `<span style="color:#a5b4fc">${m.label}: 이 영상만 따로 조정됨</span> <button class="btn sm" id="ovreset">템플릿 값으로 되돌리기</button>`
+      : `<span class="meta">${m.label}: 템플릿 값 사용 중 — 바꾸면 이 영상에만 적용돼요</span>`;
+    box.querySelector('#ovreset')?.addEventListener('click', () => {
+      const o = {}; for (const [key, v] of Object.entries(c.overrides || {})) if (!key.startsWith(k)) o[key] = v;
+      c.overrides = o; patchClip({ overrides: o }); updatePreview(); renderStyPanel();
+    });
+  }
   function renderStyPanel() {
-    const c = clip(); const eff = effTpl(c); const k = S.styEl; const m = EL_STY[k];
+    const c = clip(); const k = S.styEl; const m = EL_META[k];
     const box = root.querySelector('#stypanel'); if (!box) return;
-    const mine = () => Object.keys(c.overrides || {}).some((x) => x.startsWith(k));
-    box.innerHTML = `
-      ${sliderHTML('sSize', '크기', m.min, m.max, 1, eff[k + 'Size'], 'px')}
-      <div class="decor ${eff[k + 'OutlineOn'] ? '' : 'off'}" id="sd"><label class="toggle"><span>테두리</span><input type="checkbox" id="sOn" ${eff[k + 'OutlineOn'] ? 'checked' : ''}></label>
-        <div class="opts"><div class="colorrow"><input type="color" id="sCol" value="${eff[k + 'OutlineColor']}"><span class="meta">테두리 색</span></div>${sliderHTML('sW', '두께', 1, 24, 1, eff[k + 'OutlineWidth'], 'px')}</div></div>
-      <div class="meta ovnote" id="ovnote" ${mine() ? '' : 'hidden'} style="color:#a5b4fc">${m.label}: 이 영상만 따로 조정됨 (템플릿 값과 다름)</div>`;
-    const set = (key, v) => { c.overrides = { ...(c.overrides || {}), [key]: v }; patchClip({ overrides: c.overrides }); updatePreview(); box.querySelector('#ovnote').hidden = false; };
-    box.querySelector('#sSize').addEventListener('input', (e) => { box.querySelector('#sSizeo').textContent = e.target.value + 'px'; set(k + 'Size', +e.target.value); });
-    box.querySelector('#sOn').onchange = (e) => { box.querySelector('#sd').classList.toggle('off', !e.target.checked); set(k + 'OutlineOn', e.target.checked); };
-    box.querySelector('#sCol').addEventListener('input', (e) => set(k + 'OutlineColor', e.target.value));
-    box.querySelector('#sW').addEventListener('input', (e) => { box.querySelector('#sWo').textContent = e.target.value + 'px'; set(k + 'OutlineWidth', +e.target.value); });
+    box.innerHTML = '<div id="styinner" class="formgrid"></div><div id="ovnote" class="ovnote"></div>';
+    styApi = renderElementPanel(box.querySelector('#styinner'), {
+      el: k,
+      get: (key) => effTpl(clip())[key],
+      set: applyOv,
+      resetPos: () => { // 위치만 템플릿 값으로
+        const o = { ...(clip().overrides || {}) }; delete o[m.x]; delete o[m.y];
+        c.overrides = o; patchClip({ overrides: o }); updatePreview(); refreshOvNote();
+      },
+    });
+    refreshOvNote();
+  }
+  function chooseStyEl(k) {
+    S.styEl = k;
+    root.querySelectorAll('#styTabs button').forEach((b) => b.classList.toggle('on', b.dataset.k === k));
+    renderStyPanel(); updatePreview();
   }
 
   function renderSubRows() {
@@ -827,6 +873,63 @@ const EL_META = {
   sub: { pre: 'sub', label: '자막', node: '.ov-sub', x: 'subX', y: 'subY', font: 'subFont', size: 'subSize', min: 36, max: 110 },
   account: { pre: 'account', label: '계정명', node: '.ov-acc', x: 'accountX', y: 'accountY', font: 'accountFont', size: 'accountSize', min: 24, max: 110 },
 };
+
+/**
+ * 요소(제목/자막/계정명) 편집 패널 — 템플릿 설정과 하이라이트(쇼츠)별 편집기가 같이 쓴다.
+ *  get(key): 현재 적용 값, set(patch): 값 변경(저장/미리보기 갱신은 호출한 쪽 책임),
+ *  resetPos(): 위치 초기화(호출한 쪽이 기준을 결정). 반환값의 syncPos()로 위치 슬라이더만 갱신할 수 있다.
+ */
+function renderElementPanel(box, { el: elKey, get, set, resetPos }) {
+  const opts = arguments[1];
+  const m = EL_META[elKey]; const pre = m.pre;
+  const api = {};
+  const slider = (id, label, min, max, step, val, unit = '') => `<div class="slider"><label>${label}</label><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}"><output id="${id}o">${val}${unit}</output></div>`;
+  const color = (id, label, val) => `<div class="colorrow"><input type="color" id="${id}" value="${val}"><span class="meta">${label}</span></div>`;
+  const fonts = config.fonts || [];
+  const pct = (v) => Math.round(v * 200) / 2;
+  box.innerHTML = `
+    <div class="field"><label>${m.label} 폰트</label><div class="fontgrid" id="fonts">${fonts.map((f) => `<button class="fontchip ${get(m.font) === f.id ? 'on' : ''}" data-id="${f.id}" style="font-family:${fontStack(f.id)}"><span>가나다 쇼츠 Abc</span><small>${esc(f.label)}</small></button>`).join('')}</div></div>
+    ${slider('size', '크기', m.min, m.max, 1, get(m.size), 'px')}
+    ${elKey === 'title' ? `<div class="two">${color('c1', '첫째 줄 색', get('titleColor1'))}${color('c2', '둘째 줄 색', get('titleColor2'))}</div>` : ''}
+    ${elKey === 'sub' ? `${color('c4', '글자 색', get('subColor'))}<div class="field"><label>빠른 선택</label><div class="presets" id="presets">${Object.entries(config.subPresets || {}).map(([k, v]) => `<button class="btn sm" data-k="${k}">${esc(v.label)}</button>`).join('')}</div></div>` : ''}
+    ${elKey === 'account' ? color('c3', '글자 색', get('accountColor')) : ''}
+    <div class="decor ${get(pre + 'OutlineOn') ? '' : 'off'}" id="d-outline"><label class="toggle"><span>테두리</span><input type="checkbox" id="olOn" ${get(pre + 'OutlineOn') ? 'checked' : ''}></label>
+      <div class="opts">${color('olColor', '테두리 색', get(pre + 'OutlineColor'))}${slider('olWidth', '두께', 1, 24, 1, get(pre + 'OutlineWidth'), 'px')}</div></div>
+    <div class="decor ${get(pre + 'BgOn') ? '' : 'off'}" id="d-bg"><label class="toggle"><span>배경 박스</span><input type="checkbox" id="bgOn" ${get(pre + 'BgOn') ? 'checked' : ''}></label>
+      <div class="opts">${color('bgColor2', '배경 색', get(pre + 'BgColor'))}${slider('bgOpacity', '불투명도', 0, 100, 1, get(pre + 'BgOpacity'), '%')}${slider('bgPad', '여백', 0, 60, 1, get(pre + 'BgPad'), 'px')}</div></div>
+    <div class="field"><label>위치 (미리보기에서 끌어도 돼요)</label>
+      ${slider('px', '가로', 0, 100, 0.5, pct(get(m.x)), '%')}
+      ${slider('py', '세로', 0, 100, 0.5, pct(get(m.y)), '%')}
+      <div class="row" style="gap:8px"><button class="btn sm" id="center">가운데 맞춤</button><button class="btn sm" id="resetpos">위치 초기화</button></div></div>`;
+  const q = (x) => box.querySelector(x);
+  const out = (id, v, unit) => { const o = q(`#${id}o`); if (o) o.textContent = v + unit; };
+  q('#fonts').onclick = (e) => {
+    const chip = e.target.closest('.fontchip'); if (!chip) return;
+    box.querySelectorAll('.fontchip').forEach((c) => c.classList.toggle('on', c === chip));
+    set({ [m.font]: chip.dataset.id });
+  };
+  q('#size').oninput = (e) => { out('size', e.target.value, 'px'); set({ [m.size]: +e.target.value }); };
+  for (const [id, key] of [['c1', 'titleColor1'], ['c2', 'titleColor2'], ['c3', 'accountColor'], ['c4', 'subColor']]) q('#' + id)?.addEventListener('input', (e) => set({ [key]: e.target.value }));
+  const bind = (id, key, unit) => q('#' + id).addEventListener('input', (e) => { out(id, e.target.value, unit); set({ [pre + key]: e.target.type === 'range' ? +e.target.value : e.target.value }); });
+  bind('olColor', 'OutlineColor', ''); bind('olWidth', 'OutlineWidth', 'px');
+  bind('bgColor2', 'BgColor', ''); bind('bgOpacity', 'BgOpacity', '%'); bind('bgPad', 'BgPad', 'px');
+  q('#olOn').onchange = (e) => { q('#d-outline').classList.toggle('off', !e.target.checked); set({ [pre + 'OutlineOn']: e.target.checked }); };
+  q('#bgOn').onchange = (e) => { q('#d-bg').classList.toggle('off', !e.target.checked); set({ [pre + 'BgOn']: e.target.checked }); };
+  q('#presets')?.addEventListener('click', (e) => {
+    const p = config.subPresets?.[e.target.dataset?.k]; if (!p) return;
+    set({ subColor: p.color, subOutlineOn: p.outlineOn, subOutlineColor: p.outlineColor, subOutlineWidth: p.outlineWidth, subBgOn: p.bgOn, subBgColor: p.bgColor, subBgOpacity: p.bgOpacity, subBgPad: p.bgPad });
+    Object.assign(api, renderElementPanel(box, opts)); // 프리셋은 여러 값이 한꺼번에 바뀌므로 패널을 다시 그림
+  });
+  q('#px').oninput = (e) => { out('px', e.target.value, '%'); set({ [m.x]: e.target.value / 100 }); };
+  q('#py').oninput = (e) => { out('py', e.target.value, '%'); set({ [m.y]: e.target.value / 100 }); };
+  api.syncPos = () => {
+    const x = pct(get(m.x)); const y = pct(get(m.y));
+    q('#px').value = x; out('px', x, '%'); q('#py').value = y; out('py', y, '%');
+  };
+  q('#center').onclick = () => { set({ [m.x]: 0.5 }); api.syncPos(); };
+  q('#resetpos').onclick = () => { resetPos(); api.syncPos(); };
+  return api;
+}
 
 async function templatesPage() {
   let list = await api('/api/templates');
@@ -929,64 +1032,18 @@ async function templatesPage() {
     renderPanel(); repaint();
   }
 
-  // 선택한 요소의 속성 패널
+  // 선택한 요소의 속성 패널 (하이라이트 편집기와 같은 공통 패널)
+  let panelApi = null;
   function renderPanel() {
-    const m = EL_META[selEl]; const pre = m.pre; const box = $('#elpanel');
-    const slider = (id, label, min, max, step, val, unit = '') => `<div class="slider"><label>${label}</label><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}"><output id="${id}o">${val}${unit}</output></div>`;
-    const color = (id, label, val) => `<div class="colorrow"><input type="color" id="${id}" value="${val}"><span class="meta">${label}</span></div>`;
-    const fonts = config.fonts || [];
-    box.innerHTML = `
-      <div class="field"><label>${m.label} 폰트</label><div class="fontgrid" id="fonts">${fonts.map((f) => `<button class="fontchip ${d[m.font] === f.id ? 'on' : ''}" data-id="${f.id}" style="font-family:${fontStack(f.id)}"><span>가나다 쇼츠 Abc</span><small>${esc(f.label)}</small></button>`).join('')}</div></div>
-      ${slider('size', '크기', m.min, m.max, 1, d[m.size])}
-      ${selEl === 'title' ? `<div class="two">${color('c1', '첫째 줄 색', d.titleColor1)}${color('c2', '둘째 줄 색', d.titleColor2)}</div>` : ''}
-      ${selEl === 'sub' ? `${color('c4', '글자 색', d.subColor)}<div class="field"><label>빠른 선택</label><div class="presets" id="presets">${Object.entries(config.subPresets || {}).map(([k, v]) => `<button class="btn sm" data-k="${k}">${esc(v.label)}</button>`).join('')}</div></div>` : ''}
-      ${selEl === 'account' ? color('c3', '글자 색', d.accountColor) : ''}
-      <div class="decor ${d[pre + 'OutlineOn'] ? '' : 'off'}" id="d-outline"><label class="toggle"><span>테두리</span><input type="checkbox" id="olOn" ${d[pre + 'OutlineOn'] ? 'checked' : ''}></label>
-        <div class="opts">${color('olColor', '테두리 색', d[pre + 'OutlineColor'])}${slider('olWidth', '두께', 1, 24, 1, d[pre + 'OutlineWidth'], 'px')}</div></div>
-      <div class="decor ${d[pre + 'BgOn'] ? '' : 'off'}" id="d-bg"><label class="toggle"><span>배경 박스</span><input type="checkbox" id="bgOn" ${d[pre + 'BgOn'] ? 'checked' : ''}></label>
-        <div class="opts">${color('bgColor2', '배경 색', d[pre + 'BgColor'])}${slider('bgOpacity', '불투명도', 0, 100, 1, d[pre + 'BgOpacity'], '%')}${slider('bgPad', '여백', 0, 60, 1, d[pre + 'BgPad'], 'px')}</div></div>
-      <div class="field"><label>위치 (미리보기에서 끌어도 돼요)</label>
-        ${slider('px', '가로', 0, 100, 0.5, Math.round(d[m.x] * 200) / 2, '%')}
-        ${slider('py', '세로', 0, 100, 0.5, Math.round(d[m.y] * 200) / 2, '%')}
-        <div class="row" style="gap:8px"><button class="btn sm" id="center">가운데 맞춤</button><button class="btn sm" id="resetpos">위치 초기화</button></div></div>`;
-    box.querySelector('#fonts').onclick = (e) => {
-      const chip = e.target.closest('.fontchip'); if (!chip) return;
-      d[m.font] = chip.dataset.id; box.querySelectorAll('.fontchip').forEach((c) => c.classList.toggle('on', c === chip)); touch();
-    };
-    box.querySelector('#size').oninput = (e) => { d[m.size] = +e.target.value; box.querySelector('#sizeo').textContent = e.target.value; touch(); };
-    box.querySelector('#c1')?.addEventListener('input', (e) => { d.titleColor1 = e.target.value; touch(); });
-    box.querySelector('#c2')?.addEventListener('input', (e) => { d.titleColor2 = e.target.value; touch(); });
-    box.querySelector('#c3')?.addEventListener('input', (e) => { d.accountColor = e.target.value; touch(); });
-    box.querySelector('#c4')?.addEventListener('input', (e) => { d.subColor = e.target.value; touch(); });
-    // 테두리 / 배경
-    const bind = (id, key, fmt) => box.querySelector('#' + id).addEventListener('input', (e) => {
-      d[pre + key] = e.target.type === 'range' ? +e.target.value : e.target.value;
-      const o = box.querySelector(`#${id}o`); if (o) o.textContent = e.target.value + fmt;
-      touch();
+    const m = EL_META[selEl];
+    panelApi = renderElementPanel($('#elpanel'), {
+      el: selEl,
+      get: (k) => d[k],
+      set: (patch) => { Object.assign(d, patch); touch(); },
+      resetPos: () => { [d[m.x], d[m.y]] = config.positionDefaults[d.layout][selEl]; touch(); },
     });
-    bind('olColor', 'OutlineColor', ''); bind('olWidth', 'OutlineWidth', 'px');
-    bind('bgColor2', 'BgColor', ''); bind('bgOpacity', 'BgOpacity', '%'); bind('bgPad', 'BgPad', 'px');
-    box.querySelector('#olOn').onchange = (e) => { d[pre + 'OutlineOn'] = e.target.checked; box.querySelector('#d-outline').classList.toggle('off', !e.target.checked); touch(); };
-    box.querySelector('#bgOn').onchange = (e) => { d[pre + 'BgOn'] = e.target.checked; box.querySelector('#d-bg').classList.toggle('off', !e.target.checked); touch(); };
-    box.querySelector('#presets')?.addEventListener('click', (e) => {
-      const p = config.subPresets?.[e.target.dataset?.k]; if (!p) return;
-      Object.assign(d, { subColor: p.color, subOutlineOn: p.outlineOn, subOutlineColor: p.outlineColor, subOutlineWidth: p.outlineWidth, subBgOn: p.bgOn, subBgColor: p.bgColor, subBgOpacity: p.bgOpacity, subBgPad: p.bgPad });
-      renderPanel(); touch();
-    });
-    box.querySelector('#px').oninput = (e) => { d[m.x] = e.target.value / 100; box.querySelector('#pxo').textContent = `${e.target.value}%`; touch(); };
-    box.querySelector('#py').oninput = (e) => { d[m.y] = e.target.value / 100; box.querySelector('#pyo').textContent = `${e.target.value}%`; touch(); };
-    box.querySelector('#center').onclick = () => { d[m.x] = 0.5; syncPos(); touch(); };
-    box.querySelector('#resetpos').onclick = () => {
-      const pd = config.positionDefaults[d.layout][selEl];
-      [d[m.x], d[m.y]] = pd; syncPos(); touch();
-    };
   }
-  function syncPos() {
-    const m = EL_META[selEl]; const box = $('#elpanel');
-    const x = Math.round(d[m.x] * 200) / 2; const y = Math.round(d[m.y] * 200) / 2;
-    box.querySelector('#px').value = x; box.querySelector('#pxo').textContent = `${x}%`;
-    box.querySelector('#py').value = y; box.querySelector('#pyo').textContent = `${y}%`;
-  }
+  const syncPos = () => panelApi?.syncPos();
 
   // 미리보기에서 요소 드래그
   let drag = null;

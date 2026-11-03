@@ -239,3 +239,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .topic small { color: var(--dim); font-size: 11px; }
 .topic.used { opacity: 1; cursor: pointer; border-color: #343b8a; }
 .topic.sel { border-color: var(--accent); background: #181a2c; }
+.phone.textedit .ov { pointer-events: auto; cursor: move; touch-action: none; }
+.phone.textedit .ov.sel { outline: .45cqw dashed #8b9bff; outline-offset: 1cqw; }
+.ovnote { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; }

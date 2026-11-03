@@ -104,17 +104,29 @@ export function sanitize(input = {}, base = DEFAULTS) {
   return out;
 }
 
-// 쇼츠 하나에서만 템플릿 값을 덮어쓸 수 있는 항목: 요소별 크기와 테두리
+// 쇼츠 하나에서만 템플릿 값을 덮어쓸 수 있는 항목: 요소(제목/자막/계정명)별 폰트·크기·색·위치·테두리·배경
+// (템플릿 설정 화면과 같은 항목. 레이아웃·계정명 문구·영상 프레임은 별도 경로)
 const SIZE_RANGE = { title: [40, 130], sub: [36, 110], account: [24, 110] };
+const COLOR_KEYS = { title: ['Color1', 'Color2'], sub: ['Color'], account: ['Color'] };
 
 export function sanitizeOverrides(input) {
   const out = {};
   if (!input || typeof input !== 'object') return out;
+  const has = (k) => input[k] != null;
   for (const el of ELEMENTS) {
-    if (input[`${el}Size`] != null) out[`${el}Size`] = num(input[`${el}Size`], ...SIZE_RANGE[el], DEFAULTS[`${el}Size`]);
-    if (input[`${el}OutlineOn`] != null) out[`${el}OutlineOn`] = !!input[`${el}OutlineOn`];
-    if (/^#[0-9a-fA-F]{6}$/.test(input[`${el}OutlineColor`])) out[`${el}OutlineColor`] = input[`${el}OutlineColor`].toLowerCase();
-    if (input[`${el}OutlineWidth`] != null) out[`${el}OutlineWidth`] = num(input[`${el}OutlineWidth`], 0, 24, DECOR[el].OutlineWidth);
+    const k = (n) => `${el}${n}`;
+    if (has(k('Font')) && isFontId(input[k('Font')])) out[k('Font')] = input[k('Font')];
+    if (has(k('Size'))) out[k('Size')] = num(input[k('Size')], ...SIZE_RANGE[el], DEFAULTS[k('Size')]);
+    for (const c of COLOR_KEYS[el]) if (/^#[0-9a-fA-F]{6}$/.test(input[k(c)])) out[k(c)] = input[k(c)].toLowerCase();
+    if (has(k('X'))) out[k('X')] = rng(input[k('X')], 0, 1, 0.5);
+    if (has(k('Y'))) out[k('Y')] = rng(input[k('Y')], 0, 1, 0.5);
+    if (has(k('OutlineOn'))) out[k('OutlineOn')] = !!input[k('OutlineOn')];
+    if (/^#[0-9a-fA-F]{6}$/.test(input[k('OutlineColor')])) out[k('OutlineColor')] = input[k('OutlineColor')].toLowerCase();
+    if (has(k('OutlineWidth'))) out[k('OutlineWidth')] = num(input[k('OutlineWidth')], 0, 24, DECOR[el].OutlineWidth);
+    if (has(k('BgOn'))) out[k('BgOn')] = !!input[k('BgOn')];
+    if (/^#[0-9a-fA-F]{6}$/.test(input[k('BgColor')])) out[k('BgColor')] = input[k('BgColor')].toLowerCase();
+    if (has(k('BgOpacity'))) out[k('BgOpacity')] = num(input[k('BgOpacity')], 0, 100, DECOR[el].BgOpacity);
+    if (has(k('BgPad'))) out[k('BgPad')] = num(input[k('BgPad')], 0, 60, DECOR[el].BgPad);
   }
   return out;
 }

@@ -11,6 +11,8 @@ import * as ai from './ai.js';
 import { chunkSegments } from './subtitles.js';
 import { buildAss, segmentsOf, totalDuration } from './ass.js';
 import * as tpls from './templates.js';
+import { detectSilences, buildCuts, mockCuts } from './cuts.js';
+import { effectiveSegments, sanitizeTighten, TIGHTEN_DEFAULTS } from '../public/cuts.js';
 import { resolveFrame, framePixels, sanitizeFrame, defaultFrame, FRAME_LIMITS, FRAME_DEFAULTS } from './layout.js';
 
 const app = express();
@@ -178,6 +180,7 @@ async function runAnalysis(p, opts) {
   const set = (step, pct, message) => { p.progress = { step, pct: Math.round(pct), message }; };
 
   let transcript;
+  let words = [];
   if (MOCK_AI) {
     set('stt', 40, '데모 자막 생성 중');
     transcript = ai.mockTranscript(p.video.duration);
@@ -185,16 +188,24 @@ async function runAnalysis(p, opts) {
     set('audio', 3, '오디오 추출 중');
     const chunks = await ff.extractAudioChunks(src, path.join(dir, 'audio'));
     set('stt', 10, '음성 인식(STT) 중');
-    transcript = await ai.transcribeChunks(chunks, {
+    const r = await ai.transcribeChunks(chunks, {
       language: opts.language,
       onProgress: (f) => set('stt', 10 + f * 55, `음성 인식(STT) 중 ${Math.round(f * 100)}%`),
     });
+    transcript = r.segments; words = r.words;
     fs.rmSync(path.join(dir, 'audio'), { recursive: true, force: true });
   }
   if (!transcript.length) throw new Error('영상에서 인식된 음성이 없습니다.');
   transcript.sort((a, b) => a.start - b.start);
   p.transcript = transcript;
   p.subtitles = chunkSegments(transcript, { maxChars: 16 });
+
+  // 무음·군말 구간 (쇼츠에서 '무음·군말 제거'를 켤 때 사용). 실패해도 분석은 계속한다
+  set('silence', 67, '무음·군말 구간 분석 중');
+  try {
+    p.cuts = buildCuts({ silences: MOCK_AI ? mockCuts(p.video.duration).silences : await detectSilences(src, p.video.duration), words, segments: transcript });
+    if (MOCK_AI) p.cuts.fillers = mockCuts(p.video.duration).fillers;
+  } catch (e) { console.error('무음 분석 실패:', e.message); p.cuts = null; }
 
   set('highlight', 70, 'AI가 하이라이트 구간을 고르는 중');
   const raw = MOCK_AI
@@ -204,12 +215,24 @@ async function runAnalysis(p, opts) {
   if (!picked.length) throw new Error('쇼츠로 만들 구간을 찾지 못했습니다. 길이 범위를 조정해 다시 시도해 보세요.');
 
   p.clips = picked.map((c) => ({
-    id: store.newId(4), ...c, cropX: 0.5, cropY: 0.5, zoom: 1, frame: null, overrides: {}, templateId: opts.templateId, subtitleOn: true, titleOn: true, render: { status: 'idle' },
+    id: store.newId(4), ...c, cropX: 0.5, cropY: 0.5, zoom: 1, frame: null, overrides: {}, tighten: p.cuts ? { ...TIGHTEN_DEFAULTS } : null, templateId: opts.templateId, subtitleOn: true, titleOn: true, render: { status: 'idle' },
   }));
   p.status = 'ready';
   p.progress = { step: 'done', pct: 100, message: '완료' };
   store.save(p);
 }
+
+// 이전에 분석한 프로젝트(무음 정보 없음)에서 무음·군말 구간만 따로 분석
+app.post('/api/projects/:id/detect-cuts', wrap(async (req, res) => {
+  const p = getProject(req);
+  if (p.status === 'analyzing') throw httpError(409, '분석 중입니다.');
+  const src = path.join(store.projectDir(p.id), p.video.file);
+  const silences = MOCK_AI ? mockCuts(p.video.duration).silences : await detectSilences(src, p.video.duration);
+  p.cuts = buildCuts({ silences, words: [], segments: p.transcript || [] });
+  if (MOCK_AI) p.cuts.fillers = mockCuts(p.video.duration).fillers;
+  store.save(p);
+  res.json(p.cuts);
+}));
 
 app.post('/api/projects/:id/apply-template', wrap(async (req, res) => {
   const p = getProject(req);
@@ -278,6 +301,7 @@ app.patch('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
   if ('zoom' in b) next.zoom = Math.min(FRAME_LIMITS.zoom[1], Math.max(FRAME_LIMITS.zoom[0], Number(b.zoom) || 1));
   if ('frame' in b) next.frame = sanitizeFrame(b.frame);
   if ('overrides' in b) next.overrides = tpls.sanitizeOverrides(b.overrides);
+  if ('tighten' in b) next.tighten = sanitizeTighten(b.tighten);
   if ('templateId' in b) {
     if (!tpls.find(b.templateId)) throw httpError(400, '알 수 없는 템플릿입니다.');
     next.templateId = b.templateId;
@@ -362,14 +386,15 @@ async function renderOne(p, c) {
   const tmpFile = path.join(outDir, `${c.id}.tmp.mp4`);
   try {
     c.render = { status: 'rendering', pct: 0 };
-    const segs = segmentsOf(c);
-    const subs = p.subtitles.filter((s) => segs.some((g) => s.end > g.start && s.start < g.end));
+    // 무음·군말 제거를 반영한 실제 이어 붙일 구간 (자막 시간도 이 기준으로 다시 계산)
+    const eff = effectiveSegments(segmentsOf(c), p.cuts, c.tighten);
+    const subs = p.subtitles.filter((s) => eff.some((g) => s.end > g.start && s.start < g.end));
     const assFile = path.join(outDir, `${c.id}.ass`);
     const tpl = tpls.applyOverrides(tpls.resolve(c.templateId), c.overrides);
     const fr = resolveFrame(tpl, c);
-    fs.writeFileSync(assFile, buildAss({ clip: c, subs, tpl }));
+    fs.writeFileSync(assFile, buildAss({ clip: { ...c, segments: eff }, subs, tpl }));
     await ff.renderClip({
-      src: path.join(dir, p.video.file), segments: segs,
+      src: path.join(dir, p.video.file), eff,
       srcW: p.video.width, srcH: p.video.height, cropX: c.cropX, cropY: c.cropY ?? 0.5, zoom: c.zoom ?? 1, frame: { ...framePixels(fr), bg: fr.bg }, assFile,
       hasAudio: p.video.hasAudio, out: tmpFile,
       onProgress: (f) => { c.render.pct = Math.round(f * 100); },

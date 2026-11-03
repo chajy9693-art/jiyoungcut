@@ -28,9 +28,10 @@ const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart
 
 // ───────────────────────── 음성 인식 (STT) ─────────────────────────
 
+/** 반환: { segments: 문장 단위, words: 단어 단위(가능한 경우만, 군말 찾기에 사용) } */
 export async function transcribeChunks(chunks, opts) {
   const provider = pickSttProvider();
-  if (provider === 'local') return transcribeLocal(chunks, opts);
+  if (provider === 'local') return { segments: await transcribeLocal(chunks, opts), words: [] };
   return transcribeOpenAI(chunks, opts);
 }
 
@@ -38,6 +39,8 @@ async function transcribeOpenAI(chunks, { language, onProgress }) {
   if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.');
   const client = new OpenAI({ apiKey: OPENAI_API_KEY });
   const results = new Array(chunks.length);
+  const wordResults = new Array(chunks.length).fill(null).map(() => []);
+  let wantWords = true; // 단어 타임스탬프를 지원하지 않는 응답이면 문장 단위로만 진행
   let done = 0;
   let next = 0;
   const worker = async () => {
@@ -51,11 +54,12 @@ async function transcribeOpenAI(chunks, { language, onProgress }) {
             file: fs.createReadStream(c.file),
             model: WHISPER_MODEL,
             response_format: 'verbose_json',
-            timestamp_granularities: ['segment'],
+            timestamp_granularities: wantWords ? ['word', 'segment'] : ['segment'],
             ...(language && language !== 'auto' ? { language } : {}),
           });
           break;
         } catch (e) {
+          if (wantWords && e?.status === 400) { wantWords = false; continue; } // 단어 단위 요청이 거절되면 문장 단위로 재시도
           if (attempt >= 2) throw new Error(`음성 인식 실패: ${e.message}`);
           await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
         }
@@ -66,11 +70,12 @@ async function transcribeOpenAI(chunks, { language, onProgress }) {
         text: String(s.text || '').trim(),
         noSpeech: s.no_speech_prob ?? 0,
       }));
+      wordResults[i] = (res.words || []).map((w) => ({ start: c.offset + w.start, end: c.offset + w.end, text: String(w.word || '').trim() }));
       onProgress?.(++done / chunks.length);
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, worker));
-  return results.flat().filter((s) => s.text && s.noSpeech < 0.85);
+  return { segments: results.flat().filter((s) => s.text && s.noSpeech < 0.85), words: wordResults.flat() };
 }
 
 // ───────────────────────── 하이라이트 선정 ─────────────────────────

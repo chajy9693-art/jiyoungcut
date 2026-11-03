@@ -213,3 +213,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .col.right .eltabs { margin-bottom: 4px; }
 .phone.edit .vwrap { pointer-events: auto; cursor: ns-resize; touch-action: none; }
 .decor .toggle { align-items: center; }
+
+/* 무음·군말 제거 */
+.tighten { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 12px; }
+.tgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 22px; align-items: center; }
+.tgrid .toggle { justify-content: space-between; gap: 10px; }
+.tl .cut { position: absolute; top: 4px; bottom: 4px; border-radius: 3px; background: repeating-linear-gradient(135deg, rgba(248,113,113,.55) 0 4px, rgba(248,113,113,.15) 4px 8px); border: 1px solid rgba(248,113,113,.7); z-index: 1; pointer-events: none; }

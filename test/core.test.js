@@ -230,17 +230,30 @@ test('영상 너비·크기: 프레임 계산(짝수, 가운데, 범위 보정)�
   assert.match(f, /pad=1080:1920:216:0:color=0x102030/);
 });
 
-test('쇼츠별 텍스트 스타일 덮어쓰기: 허용 항목만 검증해 적용', () => {
-  const o = sanitizeOverrides({ titleSize: 999, subOutlineOn: 0, accountOutlineColor: '#ABCDEF', subOutlineWidth: -3, titleX: 0.9, evil: 1, titleBgOn: true });
-  assert.deepEqual(o, { titleSize: 130, subOutlineOn: false, accountOutlineColor: '#abcdef', subOutlineWidth: 0 });
+test('쇼츠별 텍스트 스타일 덮어쓰기: 템플릿 설정과 같은 항목(폰트·크기·색·위치·테두리·배경)만 검증해 적용', () => {
+  const o = sanitizeOverrides({
+    titleSize: 999, subOutlineOn: 0, accountOutlineColor: '#ABCDEF', subOutlineWidth: -3,
+    titleX: 0.9, titleY: 2, subFont: 'jua', accountFont: 'nope', titleColor2: '#00ff00', subColor: 'red',
+    titleBgOn: true, titleBgColor: '#112233', titleBgOpacity: 500, titleBgPad: 20,
+    layout: 'framed', account: 'x', frameW: 0.5, evil: 1, bgColor: '#000000',
+  });
+  assert.deepEqual(o, {
+    titleSize: 130, titleColor2: '#00ff00', titleX: 0.9, titleY: 1, titleBgOn: true, titleBgColor: '#112233', titleBgOpacity: 100, titleBgPad: 20,
+    subFont: 'jua', subOutlineOn: false, subOutlineWidth: 0, accountOutlineColor: '#abcdef',
+  }); // 폰트 id/색이 잘못되면 무시, 범위 밖 값은 보정, 템플릿 전용 항목(layout/account/frame/bgColor)은 덮어쓸 수 없음
   const tp = sanitize({});
   const eff = applyOverrides(tp, o);
   assert.equal(eff.titleSize, 130);
-  assert.equal(eff.titleX, tp.titleX); // 위치/배경 등은 덮어쓸 수 없음
+  assert.equal(eff.titleX, 0.9);
+  assert.equal(eff.titleY, 1);
+  assert.equal(eff.layout, tp.layout);
   assert.equal(applyOverrides(tp, {}), tp);
   assert.equal(applyOverrides(tp, undefined), tp);
-  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl: eff });
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [{ start: 0, end: 2, text: '자막' }], tpl: eff });
   assert.match(ass, /Style: Title,[^,]+,130,/);
+  assert.match(ass, /Style: TitleBg,/); // 배경이 켜지면 박스 스타일 생성
+  assert.match(ass, /Title,,0,0,0,,\{\\an5\\pos\(972,1920\)\}제목/); // 위치 덮어쓰기 반영
+  assert.match(ass, /Style: Sub,Jua,/);
 });
 
 test('템플릿 영상 크기: 레이아웃 기본값에서 시작, 범위 보정, 쇼츠별 조정이 위에 덮임', () => {

@@ -240,3 +240,19 @@ test('쇼츠별 텍스트 스타일 덮어쓰기: 허용 항목만 검증해 적
   const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl: eff });
   assert.match(ass, /Style: Title,[^,]+,130,/);
 });
+
+test('템플릿 영상 크기: 레이아웃 기본값에서 시작, 범위 보정, 쇼츠별 조정이 위에 덮임', () => {
+  assert.deepEqual([sanitize({}).frameW, sanitize({}).frameH, sanitize({}).frameCy], [1, 1, 0.5]);
+  const fr = sanitize({ layout: 'framed' });
+  assert.deepEqual([fr.frameW, fr.frameH, fr.frameCy], [1, 0.5625, 0.5]);
+  // 범위 밖 값 보정 + 세로 위치는 프레임이 캔버스 안에 있도록 제한
+  const t = sanitize({ frameW: 0.1, frameH: 0.5, frameCy: 0 });
+  assert.deepEqual([t.frameW, t.frameH, t.frameCy], [0.3, 0.5, 0.25]);
+  // 템플릿 프레임이 기본이 되고, 쇼츠별 조정은 지정한 값만 덮는다
+  const tp = sanitize({ frameW: 0.8, frameH: 0.4, frameCy: 0.5, bgColor: '#102030' });
+  assert.deepEqual(resolveFrame(tp), { w: 0.8, h: 0.4, cy: 0.5, bg: '#102030' });
+  assert.deepEqual(resolveFrame(tp, { frame: { w: 0.5 } }), { w: 0.5, h: 0.4, cy: 0.5, bg: '#102030' });
+  assert.deepEqual(framePixels(resolveFrame(tp)), { fw: 864, fh: 768, x0: 108, y0: 576 });
+  // 이전에 저장된(프레임 값이 없는) 템플릿은 레이아웃 기본값 그대로
+  assert.deepEqual(resolveFrame({ layout: 'framed', bgColor: '#000000' }), { w: 1, h: 0.5625, cy: 0.5, bg: '#000000' });
+});

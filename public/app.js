@@ -49,7 +49,11 @@ const fontStack = (id) => {
 
 // 영상 프레임(서버 server/layout.js 와 같은 규칙): 템플릿 레이아웃의 기본값 위에 쇼츠별 조정(clip.frame)을 덮는다
 const clampN = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
-const defaultFrame = (tpl) => (tpl.layout === 'framed' ? { w: 1, h: 1080 / 1920, cy: 0.5, bg: tpl.bgColor } : { w: 1, h: 1, cy: 0.5, bg: '#000000' });
+const defaultFrame = (tpl) => {
+  const d = config.frameDefaults?.[tpl.layout === 'framed' ? 'framed' : 'full'] || { w: 1, h: 1, cy: 0.5 };
+  return { w: tpl.frameW ?? d.w, h: tpl.frameH ?? d.h, cy: tpl.frameCy ?? d.cy, bg: tpl.bgColor ?? '#000000' };
+};
+const frameKey = (tpl) => { const f = defaultFrame(tpl); return `${f.w}|${f.h}|${f.cy}`; };
 function resolveFrame(tpl, clip = {}) {
   const d = defaultFrame(tpl); const f = clip.frame || {};
   const w = clampN(f.w ?? d.w, 0.3, 1, d.w);
@@ -538,7 +542,7 @@ function editorPage(p, templates) {
       <div class="sect"><h4>템플릿 <a href="#/templates" style="color:var(--accent);font-weight:400">편집 →</a></h4>
         <div class="tplchips" id="tplchips">${templates.map((t) => `<button class="tplchip ${t.id === tplOf(c).id ? 'on' : ''}" data-id="${t.id}"><span class="sw" style="background:${t.layout === 'framed' ? t.bgColor : '#000'}"></span><b>${esc(t.name)}</b><small>${t.account ? esc(t.account) + ' · ' : ''}${t.layout === 'framed' ? '프레임' : '전체화면'}</small></button>`).join('')}</div>
         <button class="btn sm" id="applyall">모든 쇼츠에 이 템플릿 적용</button>
-        <div class="meta">누르면 바로 미리보기에 반영돼요. 이 영상만 조정한 텍스트 스타일은 유지됩니다.</div></div>
+        <div class="meta">누르면 바로 미리보기에 반영돼요. 이 영상만 조정한 텍스트 스타일은 유지되고, 영상 크기 조정은 템플릿 기본 크기가 다르면 초기화돼요.</div></div>
       <div class="sect"><h4>영상 화면 <button class="btn sm" id="frameReset">초기화</button></h4>
         ${sliderHTML('fw', '영상 너비', 30, 100, 1, Math.round(fr.w * 100), '%')}
         ${sliderHTML('fh', '영상 높이', 20, 100, 1, Math.round(fr.h * 100), '%')}
@@ -567,7 +571,7 @@ function editorPage(p, templates) {
     q('#tplchips').onclick = (e) => {
       const chip = e.target.closest('.tplchip'); if (!chip || chip.dataset.id === c.templateId) return;
       const next = templates.find((t) => t.id === chip.dataset.id);
-      if (tplOf(c).layout !== next.layout) c.frame = null; // 영상 프레임 조정은 레이아웃 기준이라 레이아웃이 바뀌면 초기화
+      if (frameKey(tplOf(c)) !== frameKey(next)) c.frame = null; // 쇼츠별 영상 크기 조정은 템플릿 기본 프레임 기준이라, 기본 프레임이 다르면 초기화
       patchClip({ templateId: next.id, frame: c.frame ?? null });
       updatePreview(); renderRight();
     };
@@ -756,8 +760,14 @@ async function templatesPage() {
       <div class="two"><div class="field"><label>템플릿 이름</label><input type="text" id="name" maxlength="30" value="${esc(d.name)}"></div>
         <div class="field"><label>계정명 (모든 쇼츠에 표시)</label><input type="text" id="account" maxlength="40" placeholder="@내채널" value="${esc(d.account)}"></div></div>
       <div class="field"><label>레이아웃</label><div class="seg" id="layout"><button data-k="full" class="${d.layout === 'full' ? 'on' : ''}">전체화면</button><button data-k="framed" class="${d.layout === 'framed' ? 'on' : ''}">프레임 (배경색 + 정사각 영상)</button></div>
-        <div class="colorrow" id="bgrow" style="${d.layout === 'framed' ? '' : 'display:none'}"><input type="color" id="bgColor" value="${d.bgColor}"><span class="meta">배경색</span></div>
-        <div class="hint2">레이아웃을 바꾸면 요소 위치가 그 레이아웃의 기본값으로 돌아갑니다.</div></div>
+        <div class="hint2">레이아웃을 바꾸면 요소 위치와 영상 크기가 그 레이아웃의 기본값으로 돌아갑니다.</div></div>
+      <div class="decor" id="framebox"><label class="toggle"><span>영상 크기</span><button class="btn sm" id="frameDef" type="button">기본값</button></label>
+        <div class="opts">
+          ${sliderHTML('tfw', '영상 너비', 30, 100, 1, Math.round(d.frameW * 100), '%')}
+          ${sliderHTML('tfh', '영상 높이', 20, 100, 1, Math.round(d.frameH * 100), '%')}
+          ${sliderHTML('tfcy', '세로 위치', 0, 100, 1, Math.round(d.frameCy * 100), '%')}
+          <div class="colorrow"><input type="color" id="bgColor" value="${d.bgColor}"><span class="meta">배경색 (영상 밖 영역)</span></div>
+          <div class="hint2">미리보기에서 영상(보라색 배경) 영역을 위아래로 끌어 위치를 바꿀 수도 있어요. 쇼츠마다 편집기에서 다시 조정할 수 있습니다.</div></div></div>
       <div class="field"><label>편집할 요소 (미리보기에서 눌러도 선택돼요)</label><div class="eltabs" id="eltabs">${Object.entries(EL_META).map(([k, m]) => `<button data-k="${k}" class="${k === selEl ? 'on' : ''}">${m.label}</button>`).join('')}</div></div>
       <div id="elpanel" class="formgrid"></div>
       <div class="row" style="margin-top:6px"><button class="btn primary" id="save">저장</button><button class="btn" id="dup">복제</button><button class="btn danger" id="del" style="margin-left:auto">삭제</button></div>`;
@@ -770,10 +780,16 @@ async function templatesPage() {
       const pd = config.positionDefaults[v];
       [d.titleX, d.titleY] = pd.title; [d.subX, d.subY] = pd.sub; [d.accountX, d.accountY] = pd.account;
       d.accountOutlineOn = v === 'full';
+      const fdef = config.frameDefaults[v];
+      [d.frameW, d.frameH, d.frameCy] = [fdef.w, fdef.h, fdef.cy];
       f.querySelectorAll('#layout button').forEach((b) => b.classList.toggle('on', b.dataset.k === v));
-      f.querySelector('#bgrow').style.display = v === 'framed' ? '' : 'none';
+      syncFrame();
       touch(); renderPanel();
     };
+    // 영상 크기 (템플릿 기본값): 슬라이더를 움직이는 동안 미리보기에 바로 반영
+    const fbind = (id, fn) => f.querySelector('#' + id).addEventListener('input', (e) => { f.querySelector(`#${id}o`).textContent = e.target.value + '%'; fn(+e.target.value / 100); touch(); });
+    fbind('tfw', (v) => { d.frameW = v; }); fbind('tfh', (v) => { d.frameH = v; clampCy(); syncFrame(); }); fbind('tfcy', (v) => { d.frameCy = v; clampCy(); syncFrame(); });
+    f.querySelector('#frameDef').onclick = () => { const fdef = config.frameDefaults[d.layout]; [d.frameW, d.frameH, d.frameCy] = [fdef.w, fdef.h, fdef.cy]; syncFrame(); touch(); };
     f.querySelector('#eltabs').onclick = (e) => { const k = e.target.dataset.k; if (k) chooseEl(k); };
     f.querySelector('#save').onclick = async () => {
       try {
@@ -789,6 +805,15 @@ async function templatesPage() {
       try { await api(`/api/templates/${selId}`, { method: 'DELETE' }); list = list.filter((x) => x.id !== selId); select(list[0].id); } catch (e) { toast(e.message, true); }
     };
     renderPanel(); repaint();
+  }
+
+  // 프레임이 캔버스 밖으로 나가지 않도록 세로 위치 제한, 슬라이더 값 동기화
+  function clampCy() { d.frameCy = Math.min(1 - d.frameH / 2, Math.max(d.frameH / 2, d.frameCy)); }
+  function syncFrame() {
+    const f = $('#form'); if (!f) return;
+    const set = (id, v) => { const i = f.querySelector('#' + id); if (!i) return; i.value = v; f.querySelector(`#${id}o`).textContent = v + '%'; };
+    set('tfw', Math.round(d.frameW * 100)); set('tfh', Math.round(d.frameH * 100)); set('tfcy', Math.round(d.frameCy * 100));
+    const bg = f.querySelector('#bgColor'); if (bg) bg.value = d.bgColor;
   }
 
   function chooseEl(k) {
@@ -858,7 +883,11 @@ async function templatesPage() {
 
   // 미리보기에서 요소 드래그
   let drag = null;
+  let fdrag = null;
   ph.addEventListener('pointerdown', (e) => {
+    if (!e.target.closest('.ov') && e.target.closest('.vwrap')) { // 영상 영역: 위아래로 끌어 세로 위치 조정
+      fdrag = { r: ph.getBoundingClientRect(), y: e.clientY, cy: d.frameCy }; ph.setPointerCapture(e.pointerId); return;
+    }
     const node = e.target.closest('.ov'); if (!node) return;
     const key = Object.keys(EL_META).find((k) => node.matches(EL_META[k].node)); if (!key) return;
     if (key !== selEl) chooseEl(key);
@@ -867,6 +896,7 @@ async function templatesPage() {
     ph.setPointerCapture(e.pointerId);
   });
   ph.addEventListener('pointermove', (e) => {
+    if (fdrag) { d.frameCy = fdrag.cy + (e.clientY - fdrag.y) / fdrag.r.height; clampCy(); d.frameCy = Math.round(d.frameCy * 1000) / 1000; syncFrame(); touch(); return; }
     if (!drag) return;
     const { m, r } = drag;
     let nx = drag.x + ((e.clientX - r.left) / r.width - drag.px);
@@ -879,7 +909,7 @@ async function templatesPage() {
     d[m.x] = Math.round(nx * 1000) / 1000; d[m.y] = Math.round(ny * 1000) / 1000;
     syncPos(); touch();
   });
-  const endDrag = () => { drag = null; ph.querySelector('.gv').style.display = 'none'; ph.querySelector('.gh').style.display = 'none'; };
+  const endDrag = () => { drag = null; fdrag = null; ph.querySelector('.gv').style.display = 'none'; ph.querySelector('.gh').style.display = 'none'; };
   ph.addEventListener('pointerup', endDrag); ph.addEventListener('pointercancel', endDrag);
 
   $('#new').onclick = async () => {

@@ -211,3 +211,5 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tplchip small { color: var(--dim); font-size: 11px; }
 .tplchip.on { border-color: var(--accent); background: #181a2c; }
 .col.right .eltabs { margin-bottom: 4px; }
+.phone.edit .vwrap { pointer-events: auto; cursor: ns-resize; touch-action: none; }
+.decor .toggle { align-items: center; }

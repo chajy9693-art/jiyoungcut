@@ -11,7 +11,7 @@ import * as ai from './ai.js';
 import { chunkSegments } from './subtitles.js';
 import { buildAss, segmentsOf, totalDuration } from './ass.js';
 import * as tpls from './templates.js';
-import { resolveFrame, framePixels, sanitizeFrame, FRAME_LIMITS } from './layout.js';
+import { resolveFrame, framePixels, sanitizeFrame, defaultFrame, FRAME_LIMITS, FRAME_DEFAULTS } from './layout.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -36,7 +36,7 @@ function getClip(p, cid) {
 // ───────────────────────── 설정 / 목록 ─────────────────────────
 
 app.get('/api/config', (req, res) => {
-  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label, hangulFallback }) => ({ id, label, fallback: hangulFallback || null })), positionDefaults: tpls.POSITION_DEFAULTS, subPresets: tpls.SUB_PRESETS, maxDurationMin: MAX_DURATION_SEC / 60 });
+  res.json({ ...ai.capabilities(), fonts: availableFonts().map(({ id, label, hangulFallback }) => ({ id, label, fallback: hangulFallback || null })), positionDefaults: tpls.POSITION_DEFAULTS, frameDefaults: FRAME_DEFAULTS, subPresets: tpls.SUB_PRESETS, maxDurationMin: MAX_DURATION_SEC / 60 });
 });
 
 // ───────────────────────── 템플릿 ─────────────────────────
@@ -217,7 +217,9 @@ app.post('/api/projects/:id/apply-template', wrap(async (req, res) => {
   if (!t) throw httpError(400, '알 수 없는 템플릿입니다.');
   for (const c of p.clips) {
     if (['queued', 'rendering'].includes(c.render?.status)) continue;
-    if (tpls.resolve(c.templateId).layout !== t.layout) c.frame = null; // 영상 프레임 조정은 레이아웃 기준이라 레이아웃이 바뀌면 초기화
+    // 쇼츠별 영상 프레임 조정은 템플릿 기본 프레임 기준이라, 기본 프레임이 다른 템플릿으로 바꾸면 초기화
+    const k = (tp) => { const f = defaultFrame(tp); return `${f.w}|${f.h}|${f.cy}`; };
+    if (k(tpls.resolve(c.templateId)) !== k(t)) c.frame = null;
     c.templateId = t.id;
     if (c.render?.status === 'done') c.render.stale = true;
   }

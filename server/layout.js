@@ -5,10 +5,20 @@ const clamp = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n)
 
 export const FRAME_LIMITS = { w: [0.3, 1], h: [0.2, 1], zoom: [1, 3] };
 
-/** 템플릿 레이아웃이 정하는 기본 영상 프레임 (캔버스 대비 비율, cy는 프레임 중심의 세로 위치) */
-export const defaultFrame = (tpl) => (tpl.layout === 'framed'
-  ? { w: 1, h: 1080 / 1920, cy: 0.5, bg: tpl.bgColor }
-  : { w: 1, h: 1, cy: 0.5, bg: '#000000' });
+/** 레이아웃별 영상 프레임 기본값 (템플릿이 값을 따로 저장하지 않았을 때 / 레이아웃을 바꿀 때 쓰는 값) */
+export const FRAME_DEFAULTS = {
+  full: { w: 1, h: 1, cy: 0.5 },
+  framed: { w: 1, h: 1080 / 1920, cy: 0.5 },
+};
+
+/**
+ * 템플릿이 정하는 기본 영상 프레임 (캔버스 대비 비율, cy는 프레임 중심의 세로 위치).
+ * 프레임 밖 영역은 템플릿의 배경색으로 채운다.
+ */
+export function defaultFrame(tpl) {
+  const d = FRAME_DEFAULTS[tpl.layout === 'framed' ? 'framed' : 'full'];
+  return { w: tpl.frameW ?? d.w, h: tpl.frameH ?? d.h, cy: tpl.frameCy ?? d.cy, bg: tpl.bgColor ?? '#000000' };
+}
 
 /** 쇼츠별 설정(clip.frame)을 기본값 위에 덮어 영상 프레임을 결정 */
 export function resolveFrame(tpl, clip = {}) {

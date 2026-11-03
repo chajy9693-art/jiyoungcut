@@ -197,12 +197,11 @@ const TOOL = {
             score: { type: 'integer', description: '0~100 종합 점수' },
             reason: { type: 'string', description: '이 소주제를 쇼츠로 고른 이유 (한 문장)' },
             summary: { type: 'string', description: '쇼츠의 흐름 요약 (예: 결론 먼저 → 문제 상황 → 해결 방법)' },
-            rationale: { type: 'string', description: '왜 이렇게 컷편집했는지 (2~4문장). 무엇을 후킹으로 앞에 뒀는지, 무엇을 덜어냈는지, 어떤 순서로 이었는지를 구체적으로' },
-            feedback: { type: 'string', description: '편집자로서의 솔직한 의견과 피드백 (2~4문장). 잘된 점 1가지와 아쉬운 점·개선 제안 1~2가지' },
+            rationale: { type: 'string', description: '컷편집 요약 (2~3문장). 무엇을 후킹으로 앞에 뒀는지, 무엇을 덜어냈는지, 어떤 순서로 이었는지를 구체적으로' },
             description: { type: 'string', description: 'SNS 게시물 설명 (2~3문장)' },
             hashtags: { type: 'array', items: { type: 'string' }, description: '해시태그 5~8개, # 제외' },
           },
-          required: ['topic_id', 'segments', 'title', 'score', 'reason', 'summary', 'rationale', 'feedback', 'description', 'hashtags'],
+          required: ['topic_id', 'segments', 'title', 'score', 'reason', 'summary', 'rationale', 'description', 'hashtags'],
         },
       },
     },
@@ -238,8 +237,7 @@ export async function composeShorts({ transcript, topics, minLen, maxLen, title,
 ${mode === 'single' ? RULES_SINGLE(minLen, maxLen) : RULES_CONTEXT(minLen, maxLen)}
 
 각 쇼츠에 쓸 글:
-- rationale(왜 이렇게 컷편집했는지): 무엇을 후킹으로 앞에 뒀는지, 무엇을 덜어냈는지, 구간을 어떤 순서로 이었는지, 소주제를 어떻게 한 줄기로 만들었는지를 시간·내용을 들어 구체적으로 2~4문장.
-- feedback(편집자 의견·피드백): 잘된 점 1가지와 아쉬운 점/개선 제안 1~2가지(예: 후킹 보강, 길이 조정, 더 넣으면 좋을 장면, 자막으로 강조할 부분). 과장하지 말고 솔직하게 2~4문장.
+- rationale(컷편집 요약): 무엇을 후킹으로 앞에 뒀는지, 무엇을 덜어냈는지, 구간을 어떤 순서로 이었는지, 소주제를 어떻게 한 줄기로 만들었는지를 시간·내용을 들어 구체적으로 2~3문장.
 - segments[].note: 그 구간을 고르고 그 자리에 둔 이유를 한 줄로.
 
 공통 규칙:
@@ -271,41 +269,6 @@ export async function pickHighlights({ transcript, duration, minLen, maxLen, cou
   return { topics, chosen, clips };
 }
 
-// ───────── 편집 후 피드백 다시 받기 ─────────
-
-const NOTE_TOOL = {
-  name: 'submit_note',
-  description: '현재 편집 상태에 대한 편집 설명과 피드백을 제출한다.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      rationale: { type: 'string', description: '이 편집이 어떤 구성인지, 왜 이렇게 컷편집된 것으로 보이는지 (2~4문장)' },
-      feedback: { type: 'string', description: '편집자로서의 의견·피드백: 잘된 점 1가지와 아쉬운 점·개선 제안 1~2가지 (2~4문장)' },
-    },
-    required: ['rationale', 'feedback'],
-  },
-};
-
-/** 사용자가 직접 고친 현재 편집 상태를 보고 설명/피드백을 다시 쓴다 */
-export async function writeEditNote({ videoTitle, clip, parts }) {
-  if (MOCK_AI) {
-    return { rationale: `(데모) ${parts.length}개 구간을 이어 붙인 구성입니다. 첫 구간을 후킹으로 두고 이어서 본론을 배치했습니다.`, feedback: '(데모) 잘된 점: 구성이 간결합니다. 아쉬운 점: 마무리 한 줄 정리가 있으면 완결감이 더 좋아집니다.' };
-  }
-  if (!ANTHROPIC_API_KEY) throw new Error('편집 피드백에는 ANTHROPIC_API_KEY가 필요합니다.');
-  const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-  const body = parts.map((p, i) => `${i + 1}. [${p.role}] 원본 ${p.start.toFixed(1)}~${p.end.toFixed(1)}초 (${(p.end - p.start).toFixed(1)}초)${p.note ? ` — ${p.note}` : ''}\n   자막: ${p.text || '(없음)'}`).join('\n');
-  const prompt = `영상 "${videoTitle}"에서 만든 쇼츠 "${String(clip.title).replace(/\n/g, ' ')}"의 현재 편집 상태입니다. 소주제: ${clip.topic || '(지정 안 됨)'}.
-구간은 위에서 아래 순서로 이어 붙여 재생됩니다. ${clip.removed ? `무음·군말 제거로 ${clip.removed.toFixed(1)}초를 줄였습니다.` : ''}
-
-${body}
-
-이 편집을 보고 submit_note 도구로 (1) 왜 이렇게 컷편집된 구성인지 설명하고 (2) 편집자로서 솔직한 의견과 피드백(잘된 점 1가지, 아쉬운 점·개선 제안 1~2가지)을 쓰세요. 위에 적힌 내용 밖의 사실을 지어내지 마세요.`;
-  const res = await client.messages.create({ model: CLAUDE_MODEL, max_tokens: 1500, tools: [NOTE_TOOL], tool_choice: { type: 'tool', name: NOTE_TOOL.name }, messages: [{ role: 'user', content: prompt }] });
-  const tu = res.content.find((b) => b.type === 'tool_use');
-  if (!tu) throw new Error('AI가 피드백을 반환하지 않았습니다.');
-  return { rationale: String(tu.input.rationale || '').slice(0, 1200), feedback: String(tu.input.feedback || '').slice(0, 1200) };
-}
-
 /** Claude 키가 없을 때: 발화 밀도가 높은 구간을 고르는 단순 대체 로직 */
 export function heuristicHighlights({ transcript, duration, minLen, maxLen, count }) {
   const win = (minLen + maxLen) / 2;
@@ -330,8 +293,7 @@ export function heuristicHighlights({ transcript, duration, minLen, maxLen, coun
     score: Math.round(40 + 40 * (p.density / max)),
     reason: '발화 밀도가 높은 구간 (ANTHROPIC_API_KEY가 없어 단순 규칙으로 선정)',
     summary: '',
-    rationale: 'ANTHROPIC_API_KEY가 없어 AI가 영상 맥락을 분석하지 못했습니다. 말이 가장 많이 몰린 구간을 규칙으로 골라 그대로 잘랐습니다.',
-    feedback: '소주제 분석과 후킹 배치, 군더더기 제거 같은 맥락 편집은 Claude 키를 설정하면 적용됩니다. 지금 구간은 직접 확인하고 시작·끝을 다듬어 주세요.',
+    rationale: 'ANTHROPIC_API_KEY가 없어 AI가 영상 맥락을 분석하지 못했습니다. 말이 가장 많이 몰린 구간을 규칙으로 골라 그대로 잘랐습니다. 주제와 요약은 직접 입력해 주세요.',
     description: '',
     hashtags: [],
   }));
@@ -417,8 +379,7 @@ export function normalizeClips(raw, { transcript, duration, minLen, maxLen, topi
       score: Math.max(0, Math.min(100, Math.round(Number(r.score) || 0))),
       reason: String(r.reason || ''),
       summary: String(r.summary || '').slice(0, 200),
-      rationale: String(r.rationale || '').trim().slice(0, 1200),
-      feedback: String(r.feedback || '').trim().slice(0, 1200),
+      rationale: String(r.rationale || '').trim().slice(0, 600),
       description: String(r.description || ''),
       hashtags: (r.hashtags || []).map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean).slice(0, 10),
     });
@@ -459,7 +420,6 @@ export function mockHighlights({ topics, minLen, maxLen, mode }) {
       topic_id: t.id, segments, title: `데모 하이라이트\n${i + 1}번 구간`, score: 95 - i * 7,
       reason: '데모 모드: 균등 분할 소주제', summary: mode === 'single' ? '' : '후킹 → 본론 (데모)', description: '데모 설명입니다.', hashtags: ['데모', '쇼츠'],
       rationale: `(데모) 소주제 "${t.title}" 안에서만 구간을 골랐습니다. 소주제의 마지막 5초를 후킹으로 앞에 두고, 이어서 처음부터 본론을 배치했습니다.`,
-      feedback: '(데모) 잘된 점: 결론을 먼저 보여줘 이탈을 줄입니다. 아쉬운 점: 마무리 한 줄 정리가 없어 끝이 조금 갑작스럽습니다.',
     };
   });
 }

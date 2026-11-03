@@ -334,7 +334,7 @@ test('소주제: 발화 경계로 맞추고 겹침·너무 짧은 구간 제거,
 test('소주제별 쇼츠: 소주제 범위 밖 구간은 제거, 소주제 하나에 쇼츠 하나, 편집 노트 보존', () => {
   const transcript = Array.from({ length: 80 }, (_, i) => ({ start: i * 5, end: i * 5 + 4.5, text: 'x' }));
   const topics = [{ id: 1, title: 'A', start: 0, end: 100, summary: '' }, { id: 2, title: 'B', start: 100, end: 200, summary: '' }];
-  const mk = (topic_id, segments, score) => ({ topic_id, segments, title: 't', score, rationale: ` 이유${topic_id} `, feedback: '피드백' });
+  const mk = (topic_id, segments, score) => ({ topic_id, segments, title: 't', score, rationale: ` 이유${topic_id} ` });
   const out = normalizeClips([
     mk(1, [{ start: 150, end: 160, role: 'hook', note: '다른 소주제의 장면' }, { start: 10, end: 45, role: 'body', note: '본론 설명' }], 90), // 150~160은 소주제 밖 → 제거
     mk(1, [{ start: 50, end: 80, role: 'body', note: '' }], 80), // 같은 소주제 두 번째 쇼츠 → 제외
@@ -351,5 +351,5 @@ test('소주제별 쇼츠: 소주제 범위 밖 구간은 제거, 소주제 하�
   const mt = mockTopics(120, 3);
   const mc = normalizeClips(mockHighlights({ topics: mt, minLen: 30, maxLen: 60 }), { transcript: [], duration: 120, minLen: 30, maxLen: 60, topics: mt });
   assert.equal(mc.length, mt.length);
-  assert.ok(mc.every((c) => c.rationale && c.feedback && c.segments.length === 2 && c.segments[0].note));
+  assert.ok(mc.every((c) => c.rationale && !('feedback' in c) && c.segments.length === 2 && c.segments[0].note));
 });

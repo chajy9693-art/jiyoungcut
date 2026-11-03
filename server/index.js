@@ -245,27 +245,6 @@ app.post('/api/projects/:id/detect-cuts', wrap(async (req, res) => {
   res.json(p.cuts);
 }));
 
-// 지금 편집 상태(직접 고친 내용 포함)를 보고 '왜 이렇게 편집했는지 + 의견·피드백'을 다시 쓴다
-app.post('/api/projects/:id/clips/:cid/note', wrap(async (req, res) => {
-  const p = getProject(req);
-  const c = getClip(p, req.params.cid);
-  const segs = segmentsOf(c);
-  const eff = effectiveSegments(segs, p.cuts, c.tighten);
-  const parts = segs.map((g) => ({
-    role: g.role || 'body', start: g.start, end: g.end, note: g.note || '',
-    text: p.subtitles.filter((x) => x.end > g.start && x.start < g.end).map((x) => x.text).join(' ').slice(0, 300),
-  }));
-  let note;
-  try {
-    note = await ai.writeEditNote({ videoTitle: p.name, clip: { title: c.title, topic: c.topic, removed: totalDuration(segs) - totalDuration(eff) }, parts });
-  } catch (e) {
-    throw httpError(e.message.includes('ANTHROPIC_API_KEY') ? 400 : 502, e.message);
-  }
-  c.rationale = note.rationale; c.feedback = note.feedback;
-  store.save(p);
-  res.json(note);
-}));
-
 app.post('/api/projects/:id/apply-template', wrap(async (req, res) => {
   const p = getProject(req);
   const t = tpls.find(req.body?.templateId);
@@ -340,8 +319,12 @@ app.patch('/api/projects/:id/clips/:cid', wrap(async (req, res) => {
     next.templateId = b.templateId;
   }
   for (const k of ['subtitleOn', 'titleOn']) if (k in b) next[k] = !!b[k];
+  if ('topic' in b) next.topic = String(b.topic ?? '').slice(0, 100);
+  if ('rationale' in b) next.rationale = String(b.rationale ?? '').slice(0, 600);
   Object.assign(c, next);
-  if (c.render?.status === 'done') c.render.stale = true;
+  // 주제·컷편집 요약·설명·해시태그처럼 영상에 영향이 없는 값만 바꾼 경우는 '수정됨'으로 보지 않는다
+  const VIDEO_KEYS = ['start', 'end', 'segments', 'title', 'cropX', 'cropY', 'zoom', 'frame', 'overrides', 'tighten', 'templateId', 'titleOn', 'subtitleOn'];
+  if (c.render?.status === 'done' && VIDEO_KEYS.some((k) => k in b)) c.render.stale = true;
   store.save(p);
   res.json(c);
 }));

@@ -2,15 +2,15 @@ import { OUT_W, OUT_H } from './config.js';
 import { fontById } from './fonts.js';
 import { splitTitle } from './subtitles.js';
 
-// 자막 스타일. ASS 색상은 &HAABBGGRR
-export const SUB_TEMPLATES = {
-  basic: { label: '기본 (흰색)', primary: '&H00FFFFFF', outline: '&H00000000', border: 1, outlineSize: 7 },
-  yellow: { label: '노랑 강조', primary: '&H0000F0FF', outline: '&H00000000', border: 1, outlineSize: 7 },
-  box: { label: '검정 박스', primary: '&H00FFFFFF', outline: '&HB0000000', border: 3, outlineSize: 14 },
-};
-
 // framed 레이아웃: 위아래 바 사이에 1080x1080 영상
 export const FRAME = { top: 420, size: 1080 };
+
+/** #rrggbb + 불투명도(%) → ASS &HAABBGGRR (ASS의 alpha는 00=불투명, FF=투명) */
+export function assColor(hex, opacityPct = 100) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+  const a = Math.round((1 - Math.min(100, Math.max(0, opacityPct)) / 100) * 255).toString(16).padStart(2, '0');
+  return m ? `&H${a}${m[3]}${m[2]}${m[1]}`.toUpperCase() : '&H00FFFFFF';
+}
 
 export function hexToAss(hex) {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
@@ -63,7 +63,6 @@ const esc = (t) => String(t).replace(/\\/g, '＼').replace(/[{}]/g, '').replace(
  * @param tpl   templates.js 의 템플릿
  */
 export function buildAss({ clip, subs, tpl }) {
-  const sub = SUB_TEMPLATES[tpl.subStyle] || SUB_TEMPLATES.basic;
   const fTitle = fontById(tpl.titleFont);
   const fSub = fontById(tpl.subFont);
   const fAcc = fontById(tpl.accountFont);
@@ -75,27 +74,43 @@ export function buildAss({ clip, subs, tpl }) {
   lines.push('[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${OUT_W}`, `PlayResY: ${OUT_H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '');
   lines.push('[V4+ Styles]');
   lines.push('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding');
-  lines.push(`Style: Sub,${fSub.family},${tpl.subSize},${sub.primary},&H000000FF,${sub.outline},&H00000000,${fSub.bold},0,0,0,100,100,0,0,${sub.border},${sub.outlineSize},0,5,70,70,0,1`);
-  lines.push(`Style: Title,${fTitle.family},${tpl.titleSize},${hexToAss(tpl.titleColor1)},&H000000FF,&H00000000,&H00000000,${fTitle.bold},0,0,0,100,100,0,0,1,8,0,5,60,60,0,1`);
-  lines.push(`Style: Account,${fAcc.family},${tpl.accountSize},${hexToAss(tpl.accountColor)},&H000000FF,&H00000000,&H00000000,${fAcc.bold},0,0,0,100,100,0,0,1,${tpl.accountOutline ? 5 : 0},0,5,60,60,0,1`, '');
-  lines.push('[Events]', 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
+
+  // 글자 스타일(테두리) 와 배경 박스 스타일(글자는 투명, BorderStyle 3 박스만 그림)을 요소마다 만든다
+  const styles = {};
+  const addStyle = (name, el, font, size, color, margins) => {
+    const outline = tpl[`${el}OutlineOn`] ? tpl[`${el}OutlineWidth`] : 0;
+    lines.push(`Style: ${name},${font.family},${size},${color},&H000000FF,${assColor(tpl[`${el}OutlineColor`])},&H00000000,${font.bold},0,0,0,100,100,0,0,1,${outline},0,5,${margins},0,1`);
+    if (tpl[`${el}BgOn`]) {
+      lines.push(`Style: ${name}Bg,${font.family},${size},&HFFFFFFFF,&H000000FF,${assColor(tpl[`${el}BgColor`], tpl[`${el}BgOpacity`])},&HFFFFFFFF,${font.bold},0,0,0,100,100,0,0,3,${tpl[`${el}BgPad`]},0,5,${margins},0,1`);
+    }
+    styles[el] = { name, bg: !!tpl[`${el}BgOn`] };
+  };
+  addStyle('Title', 'title', fTitle, tpl.titleSize, hexToAss(tpl.titleColor1), '60,60');
+  addStyle('Sub', 'sub', fSub, tpl.subSize, hexToAss(tpl.subColor), '70,70');
+  addStyle('Account', 'account', fAcc, tpl.accountSize, hexToAss(tpl.accountColor), '60,60');
+  lines.push('', '[Events]', 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
+
+  // 배경 박스는 아래 레이어(0), 글자는 위 레이어(1)에 같은 문구를 그린다
+  const emit = (el, start, end, pos, text, bgText = text) => {
+    const st = styles[el];
+    if (st.bg) lines.push(`Dialogue: 0,${assTime(start)},${assTime(end)},${st.name}Bg,,0,0,0,,${pos}${bgText}`);
+    lines.push(`Dialogue: 1,${assTime(start)},${assTime(end)},${st.name},,0,0,0,,${pos}${text}`);
+  };
 
   if (clip.titleOn !== false) {
     const t = splitTitle(clip.title);
     if (t.length) {
       const f = (x) => withHangulFallback(esc(x), fTitle);
       const text = t.length === 1 ? f(t[0]) : `${f(t[0])}\\N{\\c${hexToAss(tpl.titleColor2)}&}${f(t[1])}`;
-      lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Title,,0,0,0,,${at(tpl.titleX, tpl.titleY)}${text}`);
+      emit('title', 0, dur, at(tpl.titleX, tpl.titleY), text, t.map(f).join('\\N'));
     }
   }
   if (tpl.account) {
-    lines.push(`Dialogue: 0,${assTime(0)},${assTime(dur)},Account,,0,0,0,,${at(tpl.accountX, tpl.accountY)}${withHangulFallback(esc(tpl.account), fAcc)}`);
+    emit('account', 0, dur, at(tpl.accountX, tpl.accountY), withHangulFallback(esc(tpl.account), fAcc));
   }
   if (clip.subtitleOn !== false) {
     const p = at(tpl.subX, tpl.subY);
-    for (const s of timelineSubs(segs, subs)) {
-      lines.push(`Dialogue: 1,${assTime(s.start)},${assTime(s.end)},Sub,,0,0,0,,${p}${withHangulFallback(esc(s.text), fSub)}`);
-    }
+    for (const s of timelineSubs(segs, subs)) emit('sub', s.start, s.end, p, withHangulFallback(esc(s.text), fSub));
   }
   return lines.join('\n') + '\n';
 }

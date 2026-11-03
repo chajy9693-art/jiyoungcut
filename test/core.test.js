@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chunkSegments, splitTitle } from '../server/subtitles.js';
-import { buildAss, assTime, timelineSubs, withHangulFallback } from '../server/ass.js';
+import { buildAss, assTime, timelineSubs, withHangulFallback, assColor } from '../server/ass.js';
 import { fontById, FONT_CATALOG } from '../server/fonts.js';
 import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider } from '../server/ai.js';
 import { parseWhisperCppJson } from '../server/stt-local.js';
@@ -66,7 +66,7 @@ test('템플릿 검증: 잘못된 값은 기본값으로 보정', () => {
   assert.equal(t.bgColor, DEFAULTS.bgColor);
   assert.equal(t.titleSize, 130);
   assert.equal(t.layout, 'full');
-  assert.equal(t.subStyle, 'basic');
+  assert.equal(t.subOutlineOn, true); // 알 수 없는 subStyle은 무시하고 기본값 유지
   assert.equal(t.account, '@a b');
 });
 
@@ -133,20 +133,20 @@ test('템플릿: 폰트·위치 기본값은 레이아웃 기준, 범위/폰트 
   assert.deepEqual([full.titleX, full.titleY, full.accountY], [0.5, 0.152, 0.9375]);
   const framed = sanitize({ layout: 'framed' });
   assert.equal(framed.accountY, 0.890625);
-  assert.equal(framed.accountOutline, false);
-  const t = sanitize({ titleX: 5, titleY: -2, titleFont: 'nope', subFont: 'jua', subSize: 10, accountOutline: true });
+  assert.equal(framed.accountOutlineOn, false);
+  const t = sanitize({ titleX: 5, titleY: -2, titleFont: 'nope', subFont: 'jua', subSize: 10, accountOutlineOn: true });
   assert.equal(t.titleX, 1);
   assert.equal(t.titleY, 0);
   assert.equal(t.titleFont, 'pretendard-bold');
   assert.equal(t.subFont, 'jua');
   assert.equal(t.subSize, 36);
-  assert.equal(t.accountOutline, true);
+  assert.equal(t.accountOutlineOn, true);
   // 기존 템플릿 수정 시 지정하지 않은 값은 유지
   assert.equal(sanitize({ subSize: 90 }, t).titleX, 1);
 });
 
 test('ASS: 요소별 폰트와 위치가 반영된다', () => {
-  const tpl = sanitize({ account: '@jy', titleFont: 'black-han-sans', subFont: 'nanum-myeongjo', accountFont: 'jua', titleX: 0.25, titleY: 0.3, subSize: 80, accountOutline: false });
+  const tpl = sanitize({ account: '@jy', titleFont: 'black-han-sans', subFont: 'nanum-myeongjo', accountFont: 'jua', titleX: 0.25, titleY: 0.3, subSize: 80, accountOutlineOn: false });
   const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [{ start: 0, end: 2, text: '자막' }], tpl });
   assert.match(ass, /Style: Title,Black Han Sans,84,.*,0,0,0,0,100,100,0,0,1,8,0,5,/);
   assert.match(ass, /Style: Sub,NanumMyeongjoExtraBold,80,/);
@@ -162,4 +162,36 @@ test('한글 글리프가 없는 폰트는 한글 구간만 폴백 폰트로 지
   const ass = buildAss({ clip: { start: 0, end: 5, title: '노션 Tips' }, subs: [], tpl });
   assert.match(ass, /\{\\fnPretendard\\b1\}노션\{\\fnNotionHand Community\\b0\} Tips/);
   assert.ok(FONT_CATALOG.every((f) => !f.hangulFallback || FONT_CATALOG.some((x) => x.id === f.hangulFallback)));
+});
+
+test('테두리/배경: 색 변환(불투명도→ASS alpha), 구버전 템플릿 마이그레이션, 값 보정', () => {
+  assert.equal(assColor('#ff8800'), '&H000088FF');
+  assert.equal(assColor('#000000', 69), '&H4F000000');
+  assert.equal(assColor('#ffffff', 0), '&HFFFFFFFF');
+  // 구버전: subStyle 'box' → 배경 켜짐/테두리 꺼짐, accountOutline → accountOutlineOn
+  const old = sanitize({ subStyle: 'box', accountOutline: false, layout: 'full' });
+  assert.equal(old.subBgOn, true);
+  assert.equal(old.subOutlineOn, false);
+  assert.equal(old.subBgOpacity, 69);
+  assert.equal(old.accountOutlineOn, false);
+  const yellow = sanitize({ subStyle: 'yellow' });
+  assert.equal(yellow.subColor, '#fff000');
+  assert.equal(yellow.subOutlineOn, true);
+  // 새 값은 범위 보정, 지정하지 않은 값은 기존 템플릿 유지
+  const t = sanitize({ titleOutlineWidth: 99, titleBgOpacity: -5, titleBgPad: 500, titleOutlineColor: 'red', titleBgOn: 1 });
+  assert.deepEqual([t.titleOutlineWidth, t.titleBgOpacity, t.titleBgPad, t.titleOutlineColor, t.titleBgOn], [24, 0, 60, '#000000', true]);
+  assert.equal(sanitize({ subSize: 90 }, t).titleBgOn, true);
+});
+
+test('ASS: 테두리 색·두께와 배경 박스(별도 레이어)가 반영된다', () => {
+  const tpl = sanitize({ account: '@a', titleOutlineColor: '#ff0000', titleOutlineWidth: 12, titleBgOn: true, titleBgColor: '#112233', titleBgOpacity: 50, titleBgPad: 20, subOutlineOn: false, accountOutlineOn: false });
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [{ start: 0, end: 2, text: '자막' }], tpl });
+  // 글자 스타일: 빨간 테두리 12px / 배경 스타일: BorderStyle 3, 패딩 20, 50% 불투명 박스, 글자는 투명
+  assert.match(ass, /Style: Title,[^,]+,84,&H00FFFFFF,&H000000FF,&H000000FF,&H00000000,[^\n]*,0,0,1,12,0,5,/);
+  assert.match(ass, /Style: TitleBg,[^,]+,84,&HFFFFFFFF,&H000000FF,&H80332211,&HFFFFFFFF,[^\n]*,0,0,3,20,0,5,/);
+  assert.match(ass, /Dialogue: 0,[^\n]*,TitleBg,,0,0,0,,[^\n]*제목/);
+  assert.match(ass, /Dialogue: 1,[^\n]*,Title,,0,0,0,,[^\n]*제목/);
+  // 테두리 끔(두께 0), 배경 꺼짐이면 배경 스타일/레이어가 없다
+  assert.match(ass, /Style: Sub,[^\n]*,0,0,1,0,0,5,/);
+  assert.ok(!ass.includes('SubBg') && !ass.includes('AccountBg'));
 });

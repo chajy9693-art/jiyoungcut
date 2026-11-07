@@ -1,6 +1,7 @@
 번들 폰트 (모두 SIL Open Font License 1.1)
 
 - Pretendard Bold / ExtraBold — https://github.com/orioncactus/pretendard
+- Paperlogy(페이퍼로지) Medium / SemiBold / Bold / ExtraBold / Black — © 2024 피티앤, 라이선스 전문: `OFL-Paperlogy.txt`
 - Black Han Sans, Do Hyeon, Jua, Sunflower, Gaegu, Nanum Myeongjo, Nanum Pen Script — Google Fonts (https://fonts.google.com)
 
 쇼츠 영상에 제목/자막/계정명을 입힐 때(ffmpeg libass)와 템플릿 미리보기(브라우저)에서 같은 파일을 씁니다.

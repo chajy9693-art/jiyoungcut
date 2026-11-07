@@ -9,6 +9,12 @@ import { FONTS_DIR } from './config.js';
 export const FONT_CATALOG = [
   { id: 'pretendard-bold', label: 'Pretendard 볼드', family: 'Pretendard', bold: -1, file: 'Pretendard-Bold.otf' },
   { id: 'pretendard-xbold', label: 'Pretendard 엑스트라볼드', family: 'Pretendard ExtraBold', bold: 0, file: 'Pretendard-ExtraBold.otf' },
+  // 페이퍼로지(OFL): 굵기마다 별도 파일이라 전체 이름(Paperlogy N 이름)으로 지정해야 정확한 굵기가 선택된다
+  { id: 'paperlogy-5', label: '페이퍼로지 미디엄', family: 'Paperlogy 5 Medium', bold: 0, file: 'Paperlogy-5Medium.ttf' },
+  { id: 'paperlogy-6', label: '페이퍼로지 세미볼드', family: 'Paperlogy 6 SemiBold', bold: 0, file: 'Paperlogy-6SemiBold.ttf' },
+  { id: 'paperlogy-7', label: '페이퍼로지 볼드', family: 'Paperlogy 7 Bold', bold: 0, file: 'Paperlogy-7Bold.ttf' },
+  { id: 'paperlogy-8', label: '페이퍼로지 엑스트라볼드', family: 'Paperlogy 8 ExtraBold', bold: 0, file: 'Paperlogy-8ExtraBold.ttf' },
+  { id: 'paperlogy-9', label: '페이퍼로지 블랙', family: 'Paperlogy 9 Black', bold: 0, file: 'Paperlogy-9Black.ttf' },
   { id: 'black-han-sans', label: '블랙 한 산스', family: 'Black Han Sans', bold: 0, file: 'BlackHanSans_400Regular.ttf' },
   { id: 'do-hyeon', label: '도현체', family: 'Do Hyeon', bold: 0, file: 'DoHyeon_400Regular.ttf' },
   { id: 'jua', label: '주아체', family: 'Jua', bold: 0, file: 'Jua_400Regular.ttf' },

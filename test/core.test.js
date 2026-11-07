@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chunkSegments, splitTitle } from '../server/subtitles.js';
 import { buildAss, assTime, timelineSubs, withHangulFallback, assColor } from '../server/ass.js';
-import { fontById, FONT_CATALOG } from '../server/fonts.js';
+import { fontById, FONT_CATALOG, availableFonts } from '../server/fonts.js';
 import { normalizeClips, normalizeSegments, heuristicHighlights, pickSttProvider, normalizeTopics, pickTopics, mockTopics, mockHighlights } from '../server/ai.js';
 import { parseWhisperCppJson } from '../server/stt-local.js';
 import { buildVideoFilter, buildRenderGraph } from '../server/ffmpeg.js';
@@ -365,4 +365,21 @@ test('소주제별 쇼츠: 소주제 범위 밖 구간은 제거, 소주제 하�
   const mc = normalizeClips(mockHighlights({ topics: mt, minLen: 30, maxLen: 60 }), { transcript: [], duration: 120, minLen: 30, maxLen: 60, topics: mt });
   assert.equal(mc.length, mt.length);
   assert.ok(mc.every((c) => c.rationale && !('feedback' in c) && c.segments.length === 2 && c.segments[0].note));
+});
+
+test('폰트 카탈로그: 페이퍼로지 5종 포함, id 중복 없음, 번들 폰트 파일이 모두 존재, 굵기별 전체 이름 사용', () => {
+  const ids = FONT_CATALOG.map((f) => f.id);
+  assert.equal(new Set(ids).size, ids.length);
+  const paper = FONT_CATALOG.filter((f) => f.id.startsWith('paperlogy-'));
+  assert.deepEqual(paper.map((f) => f.family), ['Paperlogy 5 Medium', 'Paperlogy 6 SemiBold', 'Paperlogy 7 Bold', 'Paperlogy 8 ExtraBold', 'Paperlogy 9 Black']);
+  const have = new Set(availableFonts().map((f) => f.id));
+  assert.ok(paper.every((f) => have.has(f.id)));
+  // 저장소에 포함해 배포하는 폰트(NotionHand 같은 로컬 전용 제외)는 파일이 전부 있어야 한다
+  assert.ok(FONT_CATALOG.filter((f) => f.id !== 'notion-hand').every((f) => have.has(f.id)));
+  // 템플릿에서 고를 수 있고, 렌더링 스타일에 굵기별 이름이 반영된다
+  const tpl = sanitize({ titleFont: 'paperlogy-9', subFont: 'paperlogy-5' });
+  assert.equal(tpl.titleFont, 'paperlogy-9');
+  const ass = buildAss({ clip: { start: 0, end: 5, title: '제목' }, subs: [], tpl });
+  assert.match(ass, /Style: Title,Paperlogy 9 Black,/);
+  assert.match(ass, /Style: Sub,Paperlogy 5 Medium,/);
 });
